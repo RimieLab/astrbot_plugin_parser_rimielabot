@@ -14,7 +14,7 @@ from ..config import PluginConfig
 from ..cookie import CookieJar
 from ..data import ParseResult, Platform
 from ..download import Downloader
-from ..exception import ParseException
+from ..exception import ParseException, TipException
 from .base import BaseParser, handle
 
 
@@ -259,9 +259,12 @@ class TwitterParser(BaseParser):
         if resp.get("status") != "ok":
             raise ParseException(resp.get("msg") or "解析失败")
 
-        if status_code := resp.get("statusCode"):
-            if isinstance(status_code, int) and status_code >= 400:
-                raise ParseException(resp.get("msg") or "解析失败")
+        message = resp.get("msg") or ""
+        status_code = resp.get("statusCode")
+        if status_code == 404 or "未找到" in message:
+            raise TipException("该推文无法解析：可能已删除、账号被冻结或受保护")
+        if isinstance(status_code, int) and status_code >= 400:
+            raise ParseException(message or "解析失败")
 
         html_content = resp.get("data")
         if html_content is None:
