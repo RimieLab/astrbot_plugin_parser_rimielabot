@@ -1,5 +1,10 @@
 # 更新日志
 
+## v1.5.26
+
+- 下载增加 30 秒无数据超时，避免网易云 CDN 卡住数分钟
+- 下载过程中每 5 秒输出进度日志
+
 ## v1.5.25
 
 - FFmpeg 结束后执行 `gc.collect()` 与 glibc `malloc_trim`，回收 AstrBot Python 进程内存

@@ -1,3 +1,4 @@
+import time
 from asyncio import Task, TimeoutError, create_task, gather, sleep, to_thread
 from collections.abc import Callable, Coroutine
 from functools import wraps
@@ -73,7 +74,11 @@ class Downloader:
         self.info_cache: LimitedSizeDict[str, VideoInfo] = LimitedSizeDict()
         # 用于流式下载的客户端
         self.client = ClientSession(
-            timeout=ClientTimeout(total=self.cfg.download_timeout)
+            timeout=ClientTimeout(
+                total=self.cfg.download_timeout,
+                # CDN 偶发只发响应头不出数据，30 秒无数据就重试
+                sock_read=30,
+            )
         )
 
     async def close(self):
@@ -124,6 +129,7 @@ class Downloader:
                         raise SizeLimitException
 
                     downloaded = 0
+                    last_log = time.monotonic()
                     with self.get_progress_bar(file_name, content_length) as bar:
                         async with aiofiles.open(file_path, "wb") as file:
                             async for chunk in response.content.iter_chunked(
@@ -134,6 +140,13 @@ class Downloader:
                                     raise SizeLimitException
                                 await file.write(chunk)
                                 bar.update(len(chunk))
+                                now = time.monotonic()
+                                if now - last_log >= 5:
+                                    logger.info(
+                                        f"[下载] 进度 {file_name}: "
+                                        f"{downloaded / 1024 / 1024:.2f} MB"
+                                    )
+                                    last_log = now
 
                     if downloaded == 0:
                         logger.warning(f"媒体 url: {url}, 实际大小为 0, 取消下载")
