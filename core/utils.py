@@ -1,8 +1,11 @@
 import asyncio
+import ctypes
+import gc
 import hashlib
 import json
 import re
 import shutil
+import sys
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, TypeVar
@@ -90,11 +93,22 @@ async def exec_ffmpeg_cmd(cmd: list[str]) -> None:
         if process.returncode != 0:
             error_msg = (stderr or b"").decode(errors="ignore").strip()
             raise RuntimeError(f"ffmpeg 执行失败: {error_msg}")
+    await asyncio.to_thread(release_memory)
 
 
 def has_ffmpeg() -> bool:
     """当前运行环境是否能找到 ffmpeg。"""
     return shutil.which("ffmpeg") is not None
+
+
+def release_memory() -> None:
+    """回收 Python 侧不再使用的内存（glibc 环境额外 malloc_trim）。"""
+    gc.collect()
+    if sys.platform.startswith("linux"):
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception:
+            pass
 
 
 async def video_to_gif(
@@ -359,6 +373,7 @@ async def transcode_video_audio_to_lc(path: Path) -> Path:
                 proc.kill()
                 await proc.wait()
 
+    await asyncio.to_thread(release_memory)
     if proc.returncode != 0 or not out_path.exists():
         logger.warning(
             f"[视频] 音频转码失败(profile={profile})，改用原文件: "

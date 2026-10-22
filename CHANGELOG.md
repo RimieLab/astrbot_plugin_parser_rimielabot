@@ -1,5 +1,9 @@
 # 更新日志
 
+## v1.5.25
+
+- FFmpeg 结束后执行 `gc.collect()` 与 glibc `malloc_trim`，回收 AstrBot Python 进程内存
+
 ## v1.5.24
 
 - 网易云音频文件名改为「歌曲名 - 歌手.mp3」
