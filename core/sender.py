@@ -144,7 +144,7 @@ class MessageSender:
         event: AstrMessageEvent,
         result: ParseResult,
         plan: dict,
-    ):
+    ) -> bool:
         """
         发送预览卡片（独立消息）
 
@@ -152,12 +152,22 @@ class MessageSender:
         - 只有一个重媒体
         - 未触发合并转发
         - 卡片作为“预览”，不与正文混合
+
+        返回是否真的发出了卡片，供调用方判断该组是否算发送成功。
         """
         if not plan["preview_card"]:
-            return
+            return False
 
-        if image_path := await self.renderer.render_card(result):
+        image_path = await self.renderer.render_card(result)
+        if not image_path:
+            return False
+
+        try:
             await event.send(event.chain_result([self._image_from_path(image_path)]))
+            return True
+        except Exception as e:
+            logger.error(f"发送预览卡片失败： error={e}")
+            return False
 
     async def _build_segments(
         self,
@@ -293,21 +303,34 @@ class MessageSender:
             render_card_override=group.render_card,
         )
 
-        await self._send_preview_card(event, result, plan)
+        card_sent = await self._send_preview_card(event, result, plan)
 
         segs = await self._build_segments(result, plan)
         segs = self._merge_segments_if_needed(event, segs, plan["force_merge"])
 
+        # 只有卡片、没有其他消息段时，卡片发出即视为该组发送成功，
+        # 否则会错误触发 send_parse_result 的文字兜底（Pixiv 正文/标签重复）。
         if not segs:
-            return False
+            return card_sent
 
         try:
             await event.send(event.chain_result(segs))
             return True
         except Exception as e:
             seg_meta = self._collect_seg_meta(segs)
-            logger.error(f"发送解析结果失败： error={e}, segments={seg_meta}")
-            return False
+            if self._is_napcat_timeout(e):
+                # NapCat 偶发假超时：日志报错但消息通常已经送达
+                logger.warning(
+                    f"发送超时（NapCat 可能已送达）： error={e}, segments={seg_meta}"
+                )
+            else:
+                logger.error(f"发送解析结果失败： error={e}, segments={seg_meta}")
+            return card_sent
+
+    @staticmethod
+    def _is_napcat_timeout(exc: Exception) -> bool:
+        text = str(exc)
+        return "onMsgInfoListUpdate" in text or "Timeout: NTEvent" in text
 
     @staticmethod
     def _collect_seg_meta(segs: list[BaseMessageComponent]) -> list[dict[str, str]]:
