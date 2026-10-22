@@ -2,6 +2,7 @@ import re
 from typing import ClassVar
 
 import msgspec
+import yt_dlp
 from aiohttp import ClientError
 from msgspec import Struct
 
@@ -10,6 +11,7 @@ from astrbot.api import logger
 from ..config import PluginConfig
 from ..cookie import CookieJar
 from ..download import Downloader
+from ..exception import ParseException, TipException
 from .base import BaseParser, Platform, handle
 
 
@@ -20,10 +22,20 @@ class YouTubeParser(BaseParser):
     def __init__(self, config: PluginConfig, downloader: Downloader):
         super().__init__(config, downloader)
         self.mycfg = config.parser.youtube
-        if not self.mycfg.cookies:
-            logger.warning("油管Cookie未配置，将无法解析相关媒体")
         self.headers.update({"Referer": "https://www.youtube.com/"})
         self.cookiejar = CookieJar(config, self.mycfg, domain="youtube.com")
+        if not self.mycfg.cookies:
+            logger.warning("油管Cookie未配置，将无法解析相关媒体")
+        else:
+            expired = bool(self.cookiejar.cookies) and all(
+                cookie.is_expired() for cookie in self.cookiejar.cookies
+            )
+            logger.info(
+                f"[油管] Cookies 已配置，数量={len(self.cookiejar.cookies)}，"
+                f"{'已全部过期' if expired else '文件状态正常'}"
+            )
+            if expired:
+                logger.warning("[油管] Cookies 已过期，请重新导出后更新配置")
 
     @handle("youtu", r"youtu\.be/[A-Za-z\d\._\?%&\+\-=/#]+")
     @handle(
@@ -33,16 +45,33 @@ class YouTubeParser(BaseParser):
     async def _parse_video(self, searched: re.Match[str]):
         return await self.parse_video(searched)
 
+    async def _extract_info(self, url: str):
+        try:
+            return await self.downloader.ytdlp_extract_info(
+                url,
+                cookiefile=self.cookiejar.cookie_file,
+                headers=self.headers,
+                proxy=self.proxy,
+            )
+        except yt_dlp.utils.DownloadError as exc:
+            message = str(exc)
+            lowered = message.lower()
+            if (
+                "sign in to confirm" in lowered
+                or "not a bot" in lowered
+                or "page needs to be reloaded" in lowered
+            ):
+                raise TipException(
+                    "YouTube 要求登录/人机验证：请更新油管 Cookies，"
+                    "或给 YouTube 配置干净的住宅代理后重试"
+                ) from exc
+            raise ParseException(f"YouTube 解析失败: {message[:300]}") from exc
+
     async def parse_video(self, searched: re.Match[str]):
         # 从匹配对象中获取原始URL
         url = searched.group(0)
 
-        video_info = await self.downloader.ytdlp_extract_info(
-            url,
-            cookiefile=self.cookiejar.cookie_file,
-            headers=self.headers,
-            proxy=self.proxy,
-        )
+        video_info = await self._extract_info(url)
         author = await self._fetch_author_info(video_info.channel_id)
 
         contents = []
@@ -79,12 +108,7 @@ class YouTubeParser(BaseParser):
     async def ym(self, searched: re.Match[str]):
         """获取油管的音频(需加ym前缀)"""
         url = searched.group("url")
-        video_info = await self.downloader.ytdlp_extract_info(
-            url,
-            cookiefile=self.cookiejar.cookie_file,
-            headers=self.headers,
-            proxy=self.proxy,
-        )
+        video_info = await self._extract_info(url)
         author = await self._fetch_author_info(video_info.channel_id)
 
         contents = []
