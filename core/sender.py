@@ -118,6 +118,14 @@ class MessageSender:
         if force_merge_override is not None:
             force_merge = force_merge_override
 
+        # NapCat 的伪造合并转发只会上传图片/语音为 base64，
+        # 视频仍是 file:// 本地路径，会导致“上传转发消息资源失败”。
+        # 因此含视频时一律不合并转发，改为逐条发送。
+        if force_merge and any(
+            isinstance(cont, VideoContent | DynamicContent) for cont in heavy
+        ):
+            force_merge = False
+
         # 合并转发时始终内联预览卡片（除非显式禁用）
         if force_merge and render_card_override is not False:
             render_card = True
