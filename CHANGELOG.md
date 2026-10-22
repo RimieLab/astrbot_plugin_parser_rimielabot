@@ -1,5 +1,10 @@
 # 更新日志
 
+## v1.5.20
+
+- 支持 `music.163.com/song?id=...`、`music.163.com/song/<id>` 等网易云链接
+- 网易云歌曲改为按音频发送，未获取到播放地址时给出明确提示
+
 ## v1.5.19
 
 - metadata 的 repo 指向 RimieLab fork，修复插件更新总是回到上游仓库的问题
