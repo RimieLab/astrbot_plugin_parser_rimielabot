@@ -1,3 +1,4 @@
+from asyncio import sleep
 from itertools import chain
 from pathlib import Path
 
@@ -317,19 +318,57 @@ class MessageSender:
         if not segs:
             return card_sent
 
+        # QQ/NapCat 一条消息通常只处理一个视频，多个视频会只发出第一个。
+        # 含多个视频或视频混在图片里时，拆成多条发送。
+        if self._should_split_video(segs):
+            return await self._send_segments_individually(event, segs, card_sent)
+
         try:
             await event.send(event.chain_result(segs))
             return True
         except Exception as e:
-            seg_meta = self._collect_seg_meta(segs)
-            if self._is_napcat_timeout(e):
-                # NapCat 偶发假超时：日志报错但消息通常已经送达
-                logger.warning(
-                    f"发送超时（NapCat 可能已送达）： error={e}, segments={seg_meta}"
-                )
-            else:
-                logger.error(f"发送解析结果失败： error={e}, segments={seg_meta}")
+            self._log_send_error(e, segs)
             return card_sent
+
+    @staticmethod
+    def _should_split_video(segs: list[BaseMessageComponent]) -> bool:
+        video_count = sum(isinstance(seg, Video) for seg in segs)
+        return video_count > 0 and (video_count > 1 or len(segs) > video_count)
+
+    async def _send_segments_individually(
+        self,
+        event: AstrMessageEvent,
+        segs: list[BaseMessageComponent],
+        card_sent: bool,
+    ) -> bool:
+        batches: list[list[BaseMessageComponent]] = []
+        non_video = [seg for seg in segs if not isinstance(seg, Video)]
+        if non_video:
+            batches.append(non_video)
+        batches.extend([seg] for seg in segs if isinstance(seg, Video))
+
+        sent = card_sent
+        for index, batch in enumerate(batches):
+            try:
+                await event.send(event.chain_result(batch))
+                sent = True
+            except Exception as e:
+                self._log_send_error(e, batch)
+            if index < len(batches) - 1:
+                await sleep(0.5)
+        return sent
+
+    def _log_send_error(
+        self, exc: Exception, segs: list[BaseMessageComponent]
+    ) -> None:
+        seg_meta = self._collect_seg_meta(segs)
+        if self._is_napcat_timeout(exc):
+            # NapCat 偶发假超时：日志报错但消息通常已经送达
+            logger.warning(
+                f"发送超时（NapCat 可能已送达）： error={exc}, segments={seg_meta}"
+            )
+        else:
+            logger.error(f"发送解析结果失败： error={exc}, segments={seg_meta}")
 
     @staticmethod
     def _is_napcat_timeout(exc: Exception) -> bool:

@@ -131,8 +131,19 @@ class XiaoheiheParser(BaseParser):
                 "origin": "https://www.xiaoheihe.cn",
             }
         )
-        if self.mycfg.cookies:
-            self.headers["cookie"] = self.mycfg.cookies
+        cookie_header = self._normalize_cookie_header(self.mycfg.cookies)
+        if cookie_header:
+            self.headers["cookie"] = cookie_header
+
+    @staticmethod
+    def _normalize_cookie_header(raw: str) -> str:
+        """允许只填 x_xhh_tokenid 的值，自动补全 Cookie 名。"""
+        raw = re.sub(r"\s+", "", raw or "")
+        if not raw:
+            return ""
+        if "x_xhh_tokenid=" in raw or ";" in raw:
+            return raw
+        return f"x_xhh_tokenid={raw}"
 
     @handle(
         "xiaoheihe.cn/app/bbs/link",

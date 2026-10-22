@@ -398,7 +398,7 @@
                     },
                     "cookies": {
                         "description": "Cookies",
-                        "hint": "选填",
+                        "hint": "选填；可粘贴完整 Cookie，或只填 x_xhh_tokenid 的值",
                         "type": "text",
                         "default": ""
                     },
