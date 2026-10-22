@@ -37,6 +37,10 @@ class TwitterParser(BaseParser):
             "Accept": "application/json",
             "User-Agent": self.headers.get("User-Agent", ""),
         }
+        self.media_headers = {
+            "User-Agent": self.headers.get("User-Agent", ""),
+            "Referer": "https://x.com/",
+        }
         self.cookiejar = CookieJar(config, self.mycfg, domain="xdown.app")
         if self.cookiejar.cookies_str:
             self.headers["cookie"] = self.cookiejar.cookies_str
@@ -185,13 +189,18 @@ class TwitterParser(BaseParser):
                         float(duration) if isinstance(duration, int | float) else 0.0
                     )
                     if media_type == "gif":
-                        contents.extend(self.create_dynamic_contents([video_url]))
+                        contents.extend(
+                            self.create_dynamic_contents(
+                                [video_url], headers=self.media_headers
+                            )
+                        )
                     else:
                         contents.append(
                             self.create_video_content(
                                 video_url,
                                 item.get("thumbnail_url"),
                                 duration_value,
+                                headers=self.media_headers,
                             )
                         )
                 elif media_type == "photo":
@@ -200,7 +209,9 @@ class TwitterParser(BaseParser):
                         photo_urls.append(url)
 
         if photo_urls:
-            contents.extend(self.create_image_contents(photo_urls))
+            contents.extend(
+                self.create_image_contents(photo_urls, headers=self.media_headers)
+            )
 
         if not contents:
             raise ParseException("未找到可下载的媒体")
@@ -224,7 +235,9 @@ class TwitterParser(BaseParser):
 
         return self.result(
             title=title,
-            author=self.create_author(author_name, avatar_url),
+            author=self.create_author(
+                author_name, avatar_url, headers=self.media_headers
+            ),
             contents=contents,
             url=url,
             timestamp=timestamp_value,
