@@ -13,6 +13,19 @@ from astrbot.api import logger
 K = TypeVar("K")
 V = TypeVar("V")
 
+_FFMPEG_LOCK: asyncio.Semaphore | None = None
+_FFMPEG_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def _ffmpeg_lock() -> asyncio.Semaphore:
+    """串行化 ffmpeg，避免多条解析同时启动导致 CPU/内存尖峰。"""
+    global _FFMPEG_LOCK, _FFMPEG_LOCK_LOOP
+    loop = asyncio.get_running_loop()
+    if _FFMPEG_LOCK is None or _FFMPEG_LOCK_LOOP is not loop:
+        _FFMPEG_LOCK = asyncio.Semaphore(1)
+        _FFMPEG_LOCK_LOOP = loop
+    return _FFMPEG_LOCK
+
 
 class LimitedSizeDict(OrderedDict[K, V]):
     """
@@ -40,23 +53,43 @@ async def safe_unlink(path: Path):
 
 
 async def exec_ffmpeg_cmd(cmd: list[str]) -> None:
-    """执行命令
+    """执行 ffmpeg 命令，串行化并确保子进程被回收。
 
     Args:
         cmd (list[str]): 命令序列
     """
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        _, stderr = await process.communicate()
-        return_code = process.returncode
-    except FileNotFoundError:
-        raise RuntimeError("ffmpeg 未安装或无法找到可执行文件")
+    process = None
+    async with _ffmpeg_lock():
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                _, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=300
+                )
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+                raise RuntimeError("ffmpeg 执行超时（300 秒）")
+        except FileNotFoundError:
+            raise RuntimeError("ffmpeg 未安装或无法找到可执行文件")
+        except asyncio.CancelledError:
+            if process is not None and process.returncode is None:
+                process.kill()
+                await process.wait()
+            raise
+        finally:
+            if process is not None and process.returncode is None:
+                process.kill()
+                await process.wait()
 
-    if return_code != 0:
-        error_msg = stderr.decode().strip()
-        raise RuntimeError(f"ffmpeg 执行失败: {error_msg}")
+        if process.returncode != 0:
+            error_msg = (stderr or b"").decode(errors="ignore").strip()
+            raise RuntimeError(f"ffmpeg 执行失败: {error_msg}")
 
 
 def has_ffmpeg() -> bool:
@@ -80,41 +113,37 @@ async def video_to_gif(
         return None
 
     logger.info(f"[GIF] 开始转换 {video_path.name} -> {gif_path.name}")
-    palette_path = video_path.with_name(f"{video_path.stem}_palette.png")
+    # 单次解码完成取色板和编码；限制线程数，避免瞬时打满 CPU。
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-threads",
+        "1",
+        "-filter_threads",
+        "1",
+        "-filter_complex_threads",
+        "1",
+        "-i",
+        str(video_path),
+        "-filter_complex",
+        (
+            f"[0:v]fps={fps},scale={width}:-1:flags=lanczos,"
+            "split[a][b];[a]palettegen[p];[b][p]paletteuse"
+        ),
+        "-loop",
+        "0",
+        "-an",
+        str(gif_path),
+    ]
     try:
-        await exec_ffmpeg_cmd(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(video_path),
-                "-vf",
-                f"fps={fps},scale={width}:-1:flags=lanczos,palettegen",
-                str(palette_path),
-            ]
-        )
-        await exec_ffmpeg_cmd(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(video_path),
-                "-i",
-                str(palette_path),
-                "-lavfi",
-                f"fps={fps},scale={width}:-1:flags=lanczos[x];[x][1:v]paletteuse",
-                "-loop",
-                "0",
-                "-an",
-                str(gif_path),
-            ]
-        )
+        await exec_ffmpeg_cmd(cmd)
     except Exception as e:
         logger.warning(f"视频转 GIF 失败: {video_path.name}, {e}")
         await safe_unlink(gif_path)
         return None
-    finally:
-        await safe_unlink(palette_path)
 
     if gif_path.exists() and gif_path.stat().st_size > 0:
         logger.info(f"[GIF] 转换完成 {gif_path.name} ({gif_path.stat().st_size} bytes)")
@@ -189,6 +218,9 @@ async def merge_av_h264(
     cmd = [
         "ffmpeg",
         "-y",
+        "-nostdin",
+        "-threads",
+        "2",
         "-i",
         str(v_path),
         "-i",
@@ -230,6 +262,9 @@ async def encode_video_to_h264(video_path: Path) -> Path:
     cmd = [
         "ffmpeg",
         "-y",
+        "-nostdin",
+        "-threads",
+        "2",
         "-i",
         str(video_path),
         "-c:v",
@@ -263,6 +298,7 @@ async def transcode_video_audio_to_lc(path: Path) -> Path:
             "-of",
             "default=nw=1:nk=1",
             str(path),
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -276,30 +312,52 @@ async def transcode_video_audio_to_lc(path: Path) -> Path:
         return path
 
     out_path = path.with_name(f"{path.stem}_lc.mp4")
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg",
-            "-y",
-            "-v",
-            "error",
-            "-i",
-            str(path),
-            "-c:v",
-            "copy",
-            "-c:a",
-            "aac",
-            "-profile:a",
-            "aac_low",
-            "-movflags",
-            "+faststart",
-            str(out_path),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, err = await proc.communicate()
-    except Exception as e:
-        logger.warning(f"[视频] ffmpeg 调用异常，跳过转码: {e}")
-        return path
+    proc = None
+    err: bytes = b""
+    async with _ffmpeg_lock():
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg",
+                "-y",
+                "-nostdin",
+                "-threads",
+                "2",
+                "-loglevel",
+                "error",
+                "-i",
+                str(path),
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-profile:a",
+                "aac_low",
+                "-movflags",
+                "+faststart",
+                str(out_path),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                _, err = await asyncio.wait_for(proc.communicate(), timeout=300)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                logger.warning("[视频] ffmpeg 转码超时，改用原文件")
+                return path
+        except asyncio.CancelledError:
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+            raise
+        except Exception as e:
+            logger.warning(f"[视频] ffmpeg 调用异常，跳过转码: {e}")
+            return path
+        finally:
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
 
     if proc.returncode != 0 or not out_path.exists():
         logger.warning(

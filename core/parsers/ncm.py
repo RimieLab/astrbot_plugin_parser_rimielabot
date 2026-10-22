@@ -1,3 +1,4 @@
+import re
 from asyncio import TimeoutError
 from re import Match
 from typing import ClassVar
@@ -129,7 +130,9 @@ class NCMParser(BaseParser):
         # 3. 组装结果
         author = self.create_author(author_name, author_avatar)
         audio = self.create_audio_content(
-            audio_url, duration=duration_ms // 1000
+            audio_url,
+            duration=duration_ms // 1000,
+            name=self._audio_filename(title, author_name),
         )
         logger.info(f"[网易云] 已创建音频下载任务, 作者={author_name}")
 
@@ -142,6 +145,16 @@ class NCMParser(BaseParser):
             timestamp=None,
             url=f"https://music.163.com/#/song?id={song_id}",
         )
+
+    @staticmethod
+    def _audio_filename(title: str, artist: str) -> str:
+        """生成 ``歌曲名 - 歌手.mp3`` 形式的文件名。"""
+        artist = artist.replace(" / ", ", ")
+        name = f"{title} - {artist}" if artist else title
+        name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", name)
+        name = re.sub(r"\s+", " ", name).strip(" .")
+        name = name[:120].rstrip(" .")
+        return f"{name or 'netease_audio'}.mp3"
 
     # 3. 直链 mp3 —— 直接下载
     @handle("music.126.net", r"https?://[^/]*music\.126\.net/.*\.mp3(?:\?.*)?$")

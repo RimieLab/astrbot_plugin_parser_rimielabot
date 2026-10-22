@@ -308,11 +308,15 @@ class BaseParser:
         url_or_task: str | Task[Path],
         duration: float = 0.0,
         headers: dict[str, str] | None = None,
+        name: str | None = None,
     ):
         """创建音频内容"""
         if isinstance(url_or_task, str):
             url_or_task = self.downloader.download_audio(
-                url_or_task, headers=headers or self.headers, proxy=self.proxy
+                url_or_task,
+                audio_name=name,
+                headers=headers or self.headers,
+                proxy=self.proxy,
             )
 
         return AudioContent(url_or_task, duration)
