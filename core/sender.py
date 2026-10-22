@@ -1,4 +1,3 @@
-from asyncio import sleep
 from itertools import chain
 from pathlib import Path
 
@@ -35,7 +34,7 @@ from .exception import (
     ZeroSizeException,
 )
 from .render import Renderer
-from .utils import transcode_video_audio_to_lc
+from .utils import transcode_video_audio_to_lc, video_to_gif
 
 
 class MessageSender:
@@ -120,11 +119,9 @@ class MessageSender:
             force_merge = force_merge_override
 
         # NapCat 的伪造合并转发只会上传图片/语音为 base64，
-        # 视频仍是 file:// 本地路径，会导致“上传转发消息资源失败”。
-        # 因此含视频时一律不合并转发，改为逐条发送。
-        if force_merge and any(
-            isinstance(cont, VideoContent | DynamicContent) for cont in heavy
-        ):
+        # 普通视频仍是 file:// 本地路径，会导致“上传转发消息资源失败”。
+        # DynamicContent 会先转成 GIF 图片，因此不阻止合并。
+        if force_merge and any(isinstance(cont, VideoContent) for cont in heavy):
             force_merge = False
 
         # 合并转发时始终内联预览卡片（除非显式禁用）
@@ -239,9 +236,19 @@ class MessageSender:
                 continue
 
             match cont:
-                case VideoContent() | DynamicContent():
+                case VideoContent():
                     path = await transcode_video_audio_to_lc(path)
                     segs.append(self._video_from_path(path))
+                case DynamicContent() as dynamic:
+                    gif_path = dynamic.gif_path
+                    if gif_path is None or not gif_path.exists():
+                        gif_path = await video_to_gif(path)
+                        dynamic.gif_path = gif_path
+                    if gif_path is None:
+                        if self.cfg.show_download_fail_tip:
+                            segs.append(Plain("此项动图转换失败"))
+                        continue
+                    segs.append(self._image_from_path(gif_path))
                 case AudioContent():
                     segs.append(
                         File(name=path.name, file=self._to_file_uri(path))
@@ -354,8 +361,6 @@ class MessageSender:
                 sent = True
             except Exception as e:
                 self._log_send_error(e, batch)
-            if index < len(batches) - 1:
-                await sleep(0.5)
         return sent
 
     def _log_send_error(

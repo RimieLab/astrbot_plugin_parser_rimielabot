@@ -58,6 +58,54 @@ async def exec_ffmpeg_cmd(cmd: list[str]) -> None:
         raise RuntimeError(f"ffmpeg 执行失败: {error_msg}")
 
 
+async def video_to_gif(
+    video_path: Path,
+    *,
+    width: int = 640,
+    fps: int = 15,
+) -> Path | None:
+    """把视频/动图 mp4 转成真正的 GIF，便于在合并转发中作为图片发送。"""
+    gif_path = video_path.with_suffix(".gif")
+    if gif_path.exists() and gif_path.stat().st_size > 0:
+        return gif_path
+
+    palette_path = video_path.with_name(f"{video_path.stem}_palette.png")
+    try:
+        await exec_ffmpeg_cmd(
+            [
+                "-y",
+                "-i",
+                str(video_path),
+                "-vf",
+                f"fps={fps},scale={width}:-1:flags=lanczos,palettegen",
+                str(palette_path),
+            ]
+        )
+        await exec_ffmpeg_cmd(
+            [
+                "-y",
+                "-i",
+                str(video_path),
+                "-i",
+                str(palette_path),
+                "-lavfi",
+                f"fps={fps},scale={width}:-1:flags=lanczos[x];[x][1:v]paletteuse",
+                "-loop",
+                "0",
+                "-an",
+                str(gif_path),
+            ]
+        )
+    except Exception as e:
+        logger.warning(f"视频转 GIF 失败: {video_path.name}, {e}")
+        await safe_unlink(gif_path)
+        return None
+    finally:
+        await safe_unlink(palette_path)
+
+    return gif_path if gif_path.exists() else None
+
+
 async def merge_av(
     *,
     v_path: Path,
