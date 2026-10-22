@@ -166,6 +166,10 @@ class MessageSender:
             await event.send(event.chain_result([self._image_from_path(image_path)]))
             return True
         except Exception as e:
+            if self._is_napcat_timeout(e):
+                # NapCat 常见假超时：卡片通常已经送达，按成功处理避免重复兜底
+                logger.warning(f"发送预览卡片超时（NapCat 可能已送达）： error={e}")
+                return True
             logger.error(f"发送预览卡片失败： error={e}")
             return False
 

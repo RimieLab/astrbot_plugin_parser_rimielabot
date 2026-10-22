@@ -421,11 +421,19 @@ class Renderer:
 
     async def render_card(self, result: ParseResult) -> Path | None:
         """渲染卡片并落盘，失败返回 None"""
-        cache = self.cfg.cache_dir / f"card_{uuid.uuid4().hex}.png"
+        cache = self.cfg.cache_dir / f"card_{uuid.uuid4().hex}.jpg"
         try:
             img = await self._create_card_image(result)
             buf = BytesIO()
-            await asyncio.to_thread(img.save, buf, format="PNG")
+            # PNG 卡片体积偏大，NapCat 上传时容易超时；改用高质量 JPEG。
+            await asyncio.to_thread(
+                img.save,
+                buf,
+                format="JPEG",
+                quality=92,
+                optimize=True,
+                subsampling=0,
+            )
 
             async with aiofiles.open(cache, "wb") as fp:
                 await fp.write(buf.getvalue())
