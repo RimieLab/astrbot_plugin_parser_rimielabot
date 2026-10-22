@@ -1,0 +1,142 @@
+# 通用工作日志工作流：每次 push 到默认分支，就往 devlog issue 追加一条 comment。
+# 作者身份是 GitHub App 机器人 dsh-rimielab[bot]（安装令牌，不使用 GITHUB_TOKEN）。
+#
+# 本文件由 dsh-rimielab-bot 插件在仓库首次使用时放入；已存在时不会被覆盖。
+#
+# 自举：devlog 标签和 issue 不存在时会自动创建。正文只在创建时写一次，之后不再覆盖。
+# 记录里刻意不出现 @用户名 —— mention 会重新激活已退订的 thread。
+# 评论仍会通知订阅者：不想收就打开 issue → 右侧栏 → Unsubscribe。
+#
+# 换到别的仓库只需要两件事：
+#   1) 把该仓库纳入 App 的授权范围（App 设置 → Install App → Configure）
+#   2) 在该仓库加 secret：DSH_APP_PRIVATE_KEY = App 私钥 .pem 全文
+#
+# 首次使用前若该仓库关闭了 Issues，请先到 Settings → General → Features 打开。
+
+name: Devlog
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:        # 也可以在 Actions 页面手动触发一次
+
+permissions: {}             # 不使用 GITHUB_TOKEN，全部走 App 安装令牌
+
+concurrency:
+  group: devlog
+  cancel-in-progress: false
+
+jobs:
+  log:
+    runs-on: ubuntu-latest
+    env:
+      LABEL: devlog
+      ISSUE_TITLE: "📓 Devlog — 工作记录"
+    steps:
+      - name: 检查 secret 是否就绪
+        id: guard
+        env:
+          KEY: ${{ secrets.DSH_APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::warning::尚未配置 DSH_APP_PRIVATE_KEY，跳过记录"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 换取 App 安装令牌
+        if: steps.guard.outputs.skip != 'true'
+        id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: "5321359"
+          private-key: ${{ secrets.DSH_APP_PRIVATE_KEY }}
+          permission-issues: write
+
+      - name: 确保 devlog 标签与 issue 存在
+        if: steps.guard.outputs.skip != 'true'
+        id: boot
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          cat > /tmp/header.md <<'HEADER'
+          这个 issue 是本仓库的工作日志，由 `dsh-rimielab[bot]` 维护。
+
+          ## 约定
+
+          - 每次 push 到默认分支，机器人追加一条 comment：**一个工作段一条**，按时间顺序往下。
+          - 不新开 issue，用标签 `devlog` 过滤。
+          - 记录里不出现 @用户名，避免误触发 mention 通知。
+          - 正文只放约定；历史记录都在下面的评论里。
+          HEADER
+          sed -i 's/^          //' /tmp/header.md
+
+          # 标签：已存在时 gh 返回错误，忽略
+          gh label create "$LABEL" --repo "$GITHUB_REPOSITORY" --color 1D76DB \
+            --description "由 dsh-rimielab[bot] 维护的工作记录" 2>/dev/null || true
+
+          find_issue() {
+            gh issue list --repo "$GITHUB_REPOSITORY" --label "$LABEL" --state open \
+              --json number --jq 'sort_by(.number) | .[0].number // empty'
+          }
+
+          num=$(find_issue)
+          if [ -z "$num" ]; then
+            echo "没有找到 open 的 $LABEL issue，正在创建…"
+            url=$(gh issue create --repo "$GITHUB_REPOSITORY" --label "$LABEL" \
+                    --title "$ISSUE_TITLE" --body-file /tmp/header.md | tail -n 1)
+            echo "创建返回: $url"
+            # gh issue create 会把 issue URL 打到 stdout，直接取末尾编号最可靠。
+            # 不能用 gh issue list 复查：它走搜索索引，新建的 issue 会有几秒不可见。
+            num=$(printf '%s' "$url" | grep -oE '[0-9]+$' || true)
+            for _ in 1 2 3 4 5; do
+              if [ -n "$num" ]; then break; fi
+              sleep 3
+              num=$(find_issue)
+            done
+          fi
+          if [ -z "$num" ]; then
+            echo "::error::无法确定 devlog issue 编号 —— 请确认该仓库已启用 Issues，且 App 已被授权访问该仓库"
+            exit 1
+          fi
+          echo "num=$num" >> "$GITHUB_OUTPUT"
+          echo "使用 issue #$num"
+
+      - name: 追加工作段记录
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          NUM: ${{ steps.boot.outputs.num }}
+          EVENT: ${{ github.event_name }}
+          PUSHER: ${{ github.event.pusher.name }}
+          COMPARE: ${{ github.event.compare }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          REF: ${{ github.ref_name }}
+          COMMITS: ${{ toJSON(github.event.commits) }}
+        run: |
+          set -euo pipefail
+
+          {
+            echo "### 工作段 · $(TZ=UTC date '+%Y-%m-%d %H:%M UTC')"
+            echo
+            if [ "$EVENT" = "workflow_dispatch" ]; then
+              echo "手动触发 ｜ 分支 \`${REF}\` ｜ head \`${AFTER:0:7}\`"
+            else
+              echo "推送者 \`${PUSHER}\` ｜ [\`${BEFORE:0:7}...${AFTER:0:7}\`](${COMPARE})"
+            fi
+            echo
+            echo "| 提交 | 作者 | 说明 |"
+            echo "| --- | --- | --- |"
+            if [ -z "${COMMITS:-}" ] || [ "${COMMITS}" = "null" ] || [ "${COMMITS}" = "[]" ]; then
+              echo "| \`${AFTER:0:7}\` | — | （本次没有提交明细） |"
+            else
+              echo "${COMMITS}" | jq -r '.[] | "| `\(.id[0:7])` | \(.author.name // .author.username // "?") | \(.message | split("\n")[0] | gsub("\\|"; "\\|")) |"'
+            fi
+          } > /tmp/entry.md
+
+          gh issue comment "$NUM" --repo "$GITHUB_REPOSITORY" --body-file /tmp/entry.md
+          echo "已追加记录到 issue #$NUM"
