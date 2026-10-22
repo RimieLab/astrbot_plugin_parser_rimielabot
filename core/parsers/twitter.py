@@ -3,6 +3,7 @@ import time
 from asyncio import TimeoutError
 from itertools import chain
 from typing import Any, ClassVar
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from aiohttp import ClientError, ClientTimeout
 from bs4 import BeautifulSoup, Tag
@@ -119,6 +120,16 @@ class TwitterParser(BaseParser):
         return None
 
     @staticmethod
+    def _normalize_photo_url(url: str) -> str:
+        """推特原图可能是几十 MB，群聊上传容易超时；统一取 2048px 版本。"""
+        if "pbs.twimg.com" not in url:
+            return url
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        query["name"] = ["large"]
+        return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
+
+    @staticmethod
     def _probe_media_url(tweet: dict[str, Any]) -> str | None:
         """取第一个可用于探测直链可达性的媒体 URL。"""
         media = tweet.get("media") or {}
@@ -206,7 +217,7 @@ class TwitterParser(BaseParser):
                 elif media_type == "photo":
                     url = item.get("url")
                     if isinstance(url, str) and url:
-                        photo_urls.append(url)
+                        photo_urls.append(self._normalize_photo_url(url))
 
         if photo_urls:
             contents.extend(
