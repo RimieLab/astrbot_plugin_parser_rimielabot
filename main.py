@@ -27,6 +27,9 @@ from .core.utils import extract_json_url
 
 
 class ParserPlugin(Star):
+    _SUCCESS_EMOJI_ID = 124  # /hd（OK）
+    _SUCCESS_EMOJI_TYPE = "1"
+
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.cfg = PluginConfig(config, context=context)
@@ -238,7 +241,28 @@ class ParserPlugin(Star):
             return
 
         # 发送
-        await self.sender.send_parse_result(event, parse_res)
+        if await self.sender.send_parse_result(event, parse_res):
+            await self._react_success(event)
+
+    async def _react_success(self, event: AstrMessageEvent) -> None:
+        """解析并发送成功后，在原消息上回应 /hd（OK）表情。"""
+        if not isinstance(event, AiocqhttpMessageEvent) or event.is_private_chat():
+            return
+        raw = event.message_obj.raw_message
+        if not isinstance(raw, dict):
+            return
+        message_id = raw.get("message_id")
+        if message_id is None:
+            return
+        try:
+            await event.bot.set_msg_emoji_like(
+                message_id=int(message_id),
+                emoji_id=self._SUCCESS_EMOJI_ID,
+                emoji_type=self._SUCCESS_EMOJI_TYPE,
+                set=True,
+            )
+        except Exception as e:
+            logger.debug(f"添加成功表情失败: {e}")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("开启解析")

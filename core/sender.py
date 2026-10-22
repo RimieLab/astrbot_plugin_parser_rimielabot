@@ -352,7 +352,7 @@ class MessageSender:
         self,
         event: AstrMessageEvent,
         result: ParseResult,
-    ):
+    ) -> bool:
         """
         发送解析结果的统一入口
 
@@ -369,15 +369,19 @@ class MessageSender:
         for group in groups:
             sent = await self._send_group(event, result, group) or sent
 
-        if not sent:
-            segs = self._build_text_fallback(result)
-            if not segs:
-                logger.warning("发送结果为空，不执行发送")
-                return
+        if sent:
+            return True
 
-            try:
-                await event.send(event.chain_result(segs))
-            except Exception as e:
-                seg_meta = self._collect_seg_meta(segs)
-                logger.error(f"发送解析结果失败： error={e}, segments={seg_meta}")
-            return
+        # 所有分组都没发出去时，才退化为纯文本提示
+        segs = self._build_text_fallback(result)
+        if not segs:
+            logger.warning("发送结果为空，不执行发送")
+            return False
+
+        try:
+            await event.send(event.chain_result(segs))
+        except Exception as e:
+            seg_meta = self._collect_seg_meta(segs)
+            logger.error(f"发送解析结果失败： error={e}, segments={seg_meta}")
+            return False
+        return False
