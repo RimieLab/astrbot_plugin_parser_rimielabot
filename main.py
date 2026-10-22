@@ -251,6 +251,9 @@ class ParserPlugin(Star):
         except ParseException as exc:
             logger.warning(f"[解析失败] {link}: {exc}")
             return
+        except Exception:
+            logger.exception(f"[解析异常] {link}")
+            return
 
         logger.info(
             f"[解析完成] {link}: 内容={len(parse_res.contents)}, "

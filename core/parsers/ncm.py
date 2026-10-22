@@ -62,28 +62,36 @@ class NCMParser(BaseParser):
         except (ClientError, TimeoutError) as exc:
             logger.warning(f"[网易云] 详情请求失败: {exc}")
             raise ParseException(f"网易云详情请求失败: {exc}") from exc
+        if not isinstance(detail_json, dict):
+            raise ParseException("详情接口返回格式异常")
+        songs = detail_json.get("songs") or []
         logger.info(
             f"[网易云] 详情接口: code={detail_json.get('code')}, "
-            f"songs={len(detail_json.get('songs') or [])}"
+            f"songs={len(songs)}"
         )
 
-        song = detail_json.get("songs", [{}])[0]
+        song = songs[0] if songs and isinstance(songs[0], dict) else {}
         if not song:
             raise ParseException("未找到该歌曲")
 
-        title = song.get("name", "")
-        sub_title = song.get("alias", [""])[0]  # 别名
-        album_name = song.get("album", {}).get("name", "")
-        duration_ms = song.get("duration", 0)
+        title = str(song.get("name") or "")
+        aliases = song.get("alias") or []
+        sub_title = str(aliases[0]) if aliases else ""
+        album = song.get("album") or {}
+        album_name = str(album.get("name") or "") if isinstance(album, dict) else ""
+        duration_ms = int(song.get("duration") or 0)
         logger.info(
             f"[网易云] 歌曲: {title or '未知标题'} / {album_name or '未知专辑'}, "
             f"duration={duration_ms}ms"
         )
 
         # 作者信息
-        ar_list = song.get("artists", [])
-        author_name = " / ".join(ar.get("name", "") for ar in ar_list)
-        author_avatar = ar_list[0].get("img1v1Url", "") if ar_list else ""
+        ar_list = song.get("artists") or []
+        author_name = " / ".join(
+            str(ar.get("name") or "") for ar in ar_list if isinstance(ar, dict)
+        )
+        first_artist = ar_list[0] if ar_list and isinstance(ar_list[0], dict) else {}
+        author_avatar = str(first_artist.get("img1v1Url") or "")
 
         # 2. 取播放地址
         try:
@@ -101,9 +109,14 @@ class NCMParser(BaseParser):
         except (ClientError, TimeoutError) as exc:
             logger.warning(f"[网易云] 播放请求失败: {exc}")
             raise ParseException(f"网易云播放请求失败: {exc}") from exc
+        if not isinstance(play_json, dict):
+            raise ParseException("播放接口返回格式异常")
         logger.info(f"[网易云] 播放接口: code={play_json.get('code')}")
-        play_info = play_json.get("data", [{}])[0]
-        audio_url = play_info.get("url", "")
+        play_data = play_json.get("data") or []
+        play_info = (
+            play_data[0] if play_data and isinstance(play_data[0], dict) else {}
+        )
+        audio_url = str(play_info.get("url") or "")
         if not audio_url:
             logger.warning(
                 f"[网易云] 播放接口未返回地址，尝试 outer 直链: {play_json}"
