@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import re
+import shutil
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, TypeVar
@@ -58,6 +59,11 @@ async def exec_ffmpeg_cmd(cmd: list[str]) -> None:
         raise RuntimeError(f"ffmpeg 执行失败: {error_msg}")
 
 
+def has_ffmpeg() -> bool:
+    """当前运行环境是否能找到 ffmpeg。"""
+    return shutil.which("ffmpeg") is not None
+
+
 async def video_to_gif(
     video_path: Path,
     *,
@@ -69,6 +75,11 @@ async def video_to_gif(
     if gif_path.exists() and gif_path.stat().st_size > 0:
         return gif_path
 
+    if not has_ffmpeg():
+        logger.warning("未找到 ffmpeg，无法把动图转换为 GIF")
+        return None
+
+    logger.info(f"[GIF] 开始转换 {video_path.name} -> {gif_path.name}")
     palette_path = video_path.with_name(f"{video_path.stem}_palette.png")
     try:
         await exec_ffmpeg_cmd(
@@ -103,7 +114,10 @@ async def video_to_gif(
     finally:
         await safe_unlink(palette_path)
 
-    return gif_path if gif_path.exists() else None
+    if gif_path.exists() and gif_path.stat().st_size > 0:
+        logger.info(f"[GIF] 转换完成 {gif_path.name} ({gif_path.stat().st_size} bytes)")
+        return gif_path
+    return None
 
 
 async def merge_av(

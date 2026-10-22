@@ -95,9 +95,11 @@ class Downloader:
         file_path = self.cfg.cache_dir / file_name
         # 如果文件存在，则直接返回
         if file_path.exists():
+            logger.info(f"[下载] 使用缓存 {file_name}")
             return file_path
         headers = headers or self.default_headers
         retries = self.cfg.download_retry_times
+        logger.info(f"[下载] 开始 {file_name} <- {url[:200]}")
         for attempt in range(retries + 1):
             try:
                 async with self.client.get(
@@ -106,6 +108,10 @@ class Downloader:
                     if response.status >= 400:
                         raise ClientError(f"HTTP {response.status} {response.reason}")
                     content_length = response.content_length
+                    logger.info(
+                        f"[下载] 响应 {file_name}: HTTP {response.status}, "
+                        f"size={content_length if content_length is not None else 'unknown'}"
+                    )
                     max_bytes = self.max_size * 1024 * 1024
 
                     if content_length == 0:
@@ -137,6 +143,8 @@ class Downloader:
                             f"HTTP payload incomplete {downloaded}/{content_length}"
                         )
 
+                size_mb = file_path.stat().st_size / 1024 / 1024
+                logger.info(f"[下载] 完成 {file_name} ({size_mb:.2f} MB)")
                 return file_path
             except (ZeroSizeException, SizeLimitException):
                 await safe_unlink(file_path)
@@ -144,6 +152,9 @@ class Downloader:
             except (ClientError, TimeoutError) as exc:
                 await safe_unlink(file_path)
                 if attempt < retries:
+                    logger.warning(
+                        f"[下载] 重试 {file_name} ({attempt + 1}/{retries}): {exc}"
+                    )
                     await sleep(1 + attempt)
                     continue
                 logger.exception(f"下载失败 | url: {url}, file_path: {file_path}")

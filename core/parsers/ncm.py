@@ -1,7 +1,10 @@
+from asyncio import TimeoutError
 from re import Match
 from typing import ClassVar
 
 from aiohttp import ClientError
+
+from astrbot.api import logger
 
 from ..config import PluginConfig
 from ..cookie import CookieJar
@@ -39,16 +42,30 @@ class NCMParser(BaseParser):
     @handle("music.163.com", r"music\.163\.com/song/(?P<song_id>\d+)")
     async def _parse_song(self, searched: Match[str]):
         song_id = searched.group("song_id")
+        logger.info(f"[网易云] 开始解析 song_id={song_id}")
         detail_url = (
             f"https://music.163.com/api/song/detail/?id={song_id}&ids=[{song_id}]"
         )
         play_url = f"https://music.163.com/api/song/enhance/player/url?ids=[{song_id}]&br=320000"
 
         # 1. 取歌曲元数据
-        async with self.session.get(detail_url, headers=self.headers) as resp:
-            if resp.status >= 400:
-                raise ClientError(f"[NCM] 获取歌曲信息失败 HTTP {resp.status}")
-            detail_json = await resp.json()
+        try:
+            async with self.session.get(detail_url, headers=self.headers) as resp:
+                if resp.status >= 400:
+                    raise ClientError(
+                        f"[NCM] 获取歌曲信息失败 HTTP {resp.status}"
+                    )
+                try:
+                    detail_json = await resp.json(content_type=None)
+                except Exception as exc:
+                    raise ParseException(f"详情接口返回非 JSON: {exc}") from exc
+        except (ClientError, TimeoutError) as exc:
+            logger.warning(f"[网易云] 详情请求失败: {exc}")
+            raise ParseException(f"网易云详情请求失败: {exc}") from exc
+        logger.info(
+            f"[网易云] 详情接口: code={detail_json.get('code')}, "
+            f"songs={len(detail_json.get('songs') or [])}"
+        )
 
         song = detail_json.get("songs", [{}])[0]
         if not song:
@@ -58,6 +75,10 @@ class NCMParser(BaseParser):
         sub_title = song.get("alias", [""])[0]  # 别名
         album_name = song.get("album", {}).get("name", "")
         duration_ms = song.get("duration", 0)
+        logger.info(
+            f"[网易云] 歌曲: {title or '未知标题'} / {album_name or '未知专辑'}, "
+            f"duration={duration_ms}ms"
+        )
 
         # 作者信息
         ar_list = song.get("artists", [])
@@ -65,20 +86,39 @@ class NCMParser(BaseParser):
         author_avatar = ar_list[0].get("img1v1Url", "") if ar_list else ""
 
         # 2. 取播放地址
-        async with self.session.get(play_url, headers=self.headers) as resp:
-            if resp.status >= 400:
-                raise ClientError(f"[NCM] 获取播放地址失败 HTTP {resp.status}")
-            play_json = await resp.json()
+        try:
+            async with self.session.get(play_url, headers=self.headers) as resp:
+                if resp.status >= 400:
+                    raise ClientError(
+                        f"[NCM] 获取播放地址失败 HTTP {resp.status}"
+                    )
+                try:
+                    play_json = await resp.json(content_type=None)
+                except Exception as exc:
+                    raise ParseException(
+                        f"播放接口返回非 JSON: {exc}"
+                    ) from exc
+        except (ClientError, TimeoutError) as exc:
+            logger.warning(f"[网易云] 播放请求失败: {exc}")
+            raise ParseException(f"网易云播放请求失败: {exc}") from exc
+        logger.info(f"[网易云] 播放接口: code={play_json.get('code')}")
         play_info = play_json.get("data", [{}])[0]
         audio_url = play_info.get("url", "")
         if not audio_url:
-            raise ParseException("未获取到播放地址，该歌曲可能需要登录或会员")
+            logger.warning(
+                f"[网易云] 播放接口未返回地址，尝试 outer 直链: {play_json}"
+            )
+            audio_url = (
+                f"https://music.163.com/song/media/outer/url?id={song_id}.mp3"
+            )
+        logger.info(f"[网易云] 音频地址: {str(audio_url)[:160]}")
 
         # 3. 组装结果
         author = self.create_author(author_name, author_avatar)
         audio = self.create_audio_content(
             audio_url, duration=duration_ms // 1000
         )
+        logger.info(f"[网易云] 已创建音频下载任务, 作者={author_name}")
 
         # 4. 返回
         return self.result(

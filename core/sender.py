@@ -34,7 +34,7 @@ from .exception import (
     ZeroSizeException,
 )
 from .render import Renderer
-from .utils import transcode_video_audio_to_lc, video_to_gif
+from .utils import has_ffmpeg, transcode_video_audio_to_lc, video_to_gif
 
 
 class MessageSender:
@@ -120,8 +120,13 @@ class MessageSender:
 
         # NapCat 的伪造合并转发只会上传图片/语音为 base64，
         # 普通视频仍是 file:// 本地路径，会导致“上传转发消息资源失败”。
-        # DynamicContent 会先转成 GIF 图片，因此不阻止合并。
-        if force_merge and any(isinstance(cont, VideoContent) for cont in heavy):
+        # DynamicContent 会先转成 GIF 图片；没有 ffmpeg 时只能按视频发送。
+        ffmpeg_ok = has_ffmpeg()
+        if force_merge and any(
+            isinstance(cont, VideoContent)
+            or (isinstance(cont, DynamicContent) and not ffmpeg_ok)
+            for cont in heavy
+        ):
             force_merge = False
 
         # 合并转发时始终内联预览卡片（除非显式禁用）
@@ -161,6 +166,7 @@ class MessageSender:
             return False
 
         try:
+            logger.info("[发送] 预览卡片")
             await event.send(event.chain_result([self._image_from_path(image_path)]))
             return True
         except Exception as e:
@@ -245,8 +251,10 @@ class MessageSender:
                         gif_path = await video_to_gif(path)
                         dynamic.gif_path = gif_path
                     if gif_path is None:
-                        if self.cfg.show_download_fail_tip:
-                            segs.append(Plain("此项动图转换失败"))
+                        logger.warning(
+                            f"[动图] GIF 转换失败，改为按视频发送: {path.name}"
+                        )
+                        segs.append(self._video_from_path(path))
                         continue
                     segs.append(self._image_from_path(gif_path))
                 case AudioContent():
@@ -315,9 +323,17 @@ class MessageSender:
             render_card_override=group.render_card,
         )
 
+        logger.info(
+            f"[发送] 计划: 轻媒体={len(plan['light'])}, "
+            f"重媒体={len(plan['heavy'])}, 卡片={plan['render_card']}, "
+            f"合并={plan['force_merge']}"
+        )
         card_sent = await self._send_preview_card(event, result, plan)
 
         segs = await self._build_segments(result, plan)
+        # 兜底：转换失败时可能混入 Video，绝不能塞进伪造合并转发
+        if any(isinstance(seg, Video) for seg in segs):
+            plan["force_merge"] = False
         segs = self._merge_segments_if_needed(event, segs, plan["force_merge"])
 
         # 只有卡片、没有其他消息段时，卡片发出即视为该组发送成功，
@@ -331,6 +347,7 @@ class MessageSender:
             return await self._send_segments_individually(event, segs, card_sent)
 
         try:
+            logger.info(f"[发送] 消息段: {[type(seg).__name__ for seg in segs]}")
             await event.send(event.chain_result(segs))
             return True
         except Exception as e:
@@ -354,9 +371,14 @@ class MessageSender:
             batches.append(non_video)
         batches.extend([seg] for seg in segs if isinstance(seg, Video))
 
+        logger.info(f"[发送] 分批发送: {len(batches)} 条")
         sent = card_sent
         for index, batch in enumerate(batches):
             try:
+                logger.info(
+                    f"[发送] 第 {index + 1}/{len(batches)} 条: "
+                    f"{[type(seg).__name__ for seg in batch]}"
+                )
                 await event.send(event.chain_result(batch))
                 sent = True
             except Exception as e:

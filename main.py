@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+from pathlib import Path
 
 from astrbot.api import logger
 from astrbot.api.event import filter
@@ -23,7 +24,7 @@ from .core.exception import ParseException, TipException
 from .core.parsers import BaseParser, BilibiliParser
 from .core.render import Renderer
 from .core.sender import MessageSender
-from .core.utils import extract_json_url
+from .core.utils import extract_json_url, has_ffmpeg
 
 
 class ParserPlugin(Star):
@@ -50,8 +51,23 @@ class ParserPlugin(Star):
         # 关键词 -> 正则 列表
         self.key_pattern_list: list[tuple[str, re.Pattern[str]]] = []
 
+    @staticmethod
+    def _read_version() -> str:
+        try:
+            metadata = Path(__file__).with_name("metadata.yaml")
+            for line in metadata.read_text(encoding="utf-8").splitlines():
+                if line.startswith("version:"):
+                    return line.split(":", 1)[1].strip()
+        except Exception:
+            pass
+        return "unknown"
+
     async def initialize(self):
         """加载、重载插件时触发"""
+        logger.info(
+            f"[parser] 插件版本 {self._read_version()}，"
+            f"ffmpeg={'可用' if has_ffmpeg() else '不可用（动图将按视频发送）'}"
+        )
         # 加载渲染器资源
         await asyncio.to_thread(Renderer.load_resources)
         # 注册解析器
@@ -93,7 +109,8 @@ class ParserPlugin(Star):
             for keyword, _ in cls._key_patterns:
                 self.parser_map[keyword] = parser
 
-        logger.debug(f"启用平台: {'、'.join(enabled_names) if enabled_names else '无'}")
+        enabled_text = "、".join(enabled_names) if enabled_names else "无"
+        logger.info(f"[parser] 启用平台: {enabled_text}")
 
         # -------- 关键词-正则表（统一生成） --------
         patterns: list[tuple[str, re.Pattern[str]]] = []
@@ -224,6 +241,7 @@ class ParserPlugin(Star):
             return
 
         # 解析
+        logger.info(f"[解析开始] {link}")
         try:
             parse_res = await self.parser_map[keyword].parse(keyword, searched)
         except TipException as exc:
@@ -234,6 +252,11 @@ class ParserPlugin(Star):
             logger.warning(f"[解析失败] {link}: {exc}")
             return
 
+        logger.info(
+            f"[解析完成] {link}: 内容={len(parse_res.contents)}, "
+            f"分组={len(parse_res.send_groups)}"
+        )
+
         # 基于资源ID防抖
         resource_id = parse_res.get_resource_id()
         if self.debouncer.hit_resource(umo, resource_id):
@@ -242,7 +265,10 @@ class ParserPlugin(Star):
 
         # 发送
         if await self.sender.send_parse_result(event, parse_res):
+            logger.info(f"[解析完成] 已发送 {link}")
             await self._react_success(event)
+        else:
+            logger.warning(f"[发送失败] {link}")
 
     async def _react_success(self, event: AstrMessageEvent) -> None:
         """解析并发送成功后，在原消息上回应 /hd（OK）表情。"""
