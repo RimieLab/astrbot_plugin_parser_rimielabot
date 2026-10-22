@@ -84,6 +84,7 @@ async def video_to_gif(
     try:
         await exec_ffmpeg_cmd(
             [
+                "ffmpeg",
                 "-y",
                 "-i",
                 str(video_path),
@@ -94,6 +95,7 @@ async def video_to_gif(
         )
         await exec_ffmpeg_cmd(
             [
+                "ffmpeg",
                 "-y",
                 "-i",
                 str(video_path),
