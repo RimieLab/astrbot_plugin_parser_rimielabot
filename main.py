@@ -421,7 +421,9 @@ class ParserPlugin(Star):
             return
         ok = await self.sender.resend_last_to_admin(event)
         yield event.plain_result(
-            "已私发管理员" if ok else "没有待补发的资源，或私发失败"
+            "已尝试私发管理员，请确认是否收到"
+            if ok
+            else "没有待补发的资源，或私发失败"
         )
 
     @filter.permission_type(filter.PermissionType.ADMIN)

@@ -1,3 +1,4 @@
+from asyncio import to_thread
 from itertools import chain
 from pathlib import Path
 
@@ -38,7 +39,9 @@ from .exception import (
 )
 from .render import Renderer
 from .utils import (
+    encode_video_to_h264,
     has_ffmpeg,
+    reencode_image,
     transcode_video_audio_to_lc,
     video_to_gif,
 )
@@ -471,13 +474,58 @@ class MessageSender:
                     result.append(seg.toDict())
         return result
 
+    @staticmethod
+    def _media_path(seg: BaseMessageComponent) -> Path | None:
+        if not isinstance(seg, Image | Video):
+            return None
+        path = getattr(seg, "path", "") or ""
+        if not path:
+            file_uri = getattr(seg, "file", "") or ""
+            if file_uri.startswith("file://"):
+                from urllib.parse import unquote, urlparse
+
+                path = unquote(urlparse(file_uri).path)
+        if not path:
+            return None
+        media_path = Path(path)
+        return media_path if media_path.is_file() else None
+
+    async def _reencode_for_admin(
+        self, segs: list[BaseMessageComponent]
+    ) -> list[BaseMessageComponent]:
+        if not has_ffmpeg():
+            return list(segs)
+        result: list[BaseMessageComponent] = []
+        for seg in segs:
+            media_path = self._media_path(seg)
+            if media_path is None:
+                result.append(seg)
+                continue
+            try:
+                if isinstance(seg, Video):
+                    new_path = await encode_video_to_h264(media_path)
+                    result.append(Video.fromFileSystem(str(new_path)))
+                else:
+                    new_path = await to_thread(reencode_image, media_path)
+                    result.append(
+                        Image.fromFileSystem(str(new_path))
+                        if new_path is not None
+                        else seg
+                    )
+            except Exception as e:
+                logger.warning(f"[补发] 媒体重新编码失败，使用原文件: {e}")
+                result.append(seg)
+        logger.info("[补发] 已重新编码媒体后发送")
+        return result
+
     async def resend_last_to_admin(
         self, event: AstrMessageEvent, *, allow_private: bool = True
     ) -> bool:
         if not self._last_failed_segs:
             return False
+        segs = await self._reencode_for_admin(self._last_failed_segs)
         return await self._send_to_admin(
-            event, self._last_failed_segs, allow_private=allow_private
+            event, segs, allow_private=allow_private
         )
 
     async def _send_to_admin(
