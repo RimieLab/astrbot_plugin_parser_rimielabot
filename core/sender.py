@@ -13,6 +13,9 @@ from astrbot.core.message.components import (
     Video,
 )
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
+from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
+    AiocqhttpMessageEvent,
+)
 
 from .config import PluginConfig
 from .data import (
@@ -33,6 +36,7 @@ from .exception import (
     SizeLimitException,
     ZeroSizeException,
 )
+from .protected_forward import ProtectedForwardStore
 from .render import Renderer
 from .utils import has_ffmpeg, transcode_video_audio_to_lc, video_to_gif
 
@@ -52,9 +56,15 @@ class MessageSender:
     - 只负责“怎么发”
     """
 
-    def __init__(self, config: PluginConfig, renderer: Renderer):
+    def __init__(
+        self,
+        config: PluginConfig,
+        renderer: Renderer,
+        protected_forward: ProtectedForwardStore | None = None,
+    ):
         self.cfg = config
         self.renderer = renderer
+        self.protected_forward = protected_forward
 
     def _to_file_uri(self, path: Path) -> str:
         if not path.is_absolute():
@@ -171,6 +181,10 @@ class MessageSender:
             return True
         except Exception as e:
             if self._is_napcat_timeout(e):
+                if await self._try_protected_forward(
+                    event, [self._image_from_path(image_path)]
+                ):
+                    return True
                 # NapCat 常见假超时：卡片通常已经送达，按成功处理避免重复兜底
                 logger.warning(f"发送预览卡片超时（NapCat 可能已送达）： error={e}")
                 return True
@@ -351,6 +365,10 @@ class MessageSender:
             await event.send(event.chain_result(segs))
             return True
         except Exception as e:
+            if self._is_napcat_timeout(e) and await self._try_protected_forward(
+                event, segs
+            ):
+                return True
             self._log_send_error(e, segs)
             return card_sent
 
@@ -382,8 +400,53 @@ class MessageSender:
                 await event.send(event.chain_result(batch))
                 sent = True
             except Exception as e:
+                if self._is_napcat_timeout(e) and await self._try_protected_forward(
+                    event, batch
+                ):
+                    sent = True
+                    continue
                 self._log_send_error(e, batch)
         return sent
+
+    async def _try_protected_forward(
+        self,
+        event: AstrMessageEvent,
+        segs: list[BaseMessageComponent],
+    ) -> bool:
+        """把失败资源附在保护聊天记录后面，用合并转发再试一次。"""
+        if not self.protected_forward or not self.protected_forward.exists():
+            return False
+        if not isinstance(event, AiocqhttpMessageEvent):
+            return False
+        try:
+            stored = self.protected_forward.load()
+            if not stored:
+                return False
+            node = Node(
+                content=list(segs),
+                uin=str(event.get_self_id()),
+                name="解析器",
+            )
+            node_dict = await node.to_dict()
+            messages = [*stored, node_dict]
+            group_id = event.get_group_id()
+            if group_id:
+                await event.bot.call_action(
+                    "send_group_forward_msg",
+                    group_id=group_id,
+                    messages=messages,
+                )
+            else:
+                await event.bot.call_action(
+                    "send_private_forward_msg",
+                    user_id=event.get_sender_id(),
+                    messages=messages,
+                )
+            logger.info(f"[保护转发] 发送成功，共 {len(messages)} 个节点")
+            return True
+        except Exception as e:
+            logger.warning(f"[保护转发] 发送失败: {e}")
+            return False
 
     def _log_send_error(
         self, exc: Exception, segs: list[BaseMessageComponent]
