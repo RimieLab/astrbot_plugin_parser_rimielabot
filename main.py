@@ -348,31 +348,34 @@ class ParserPlugin(Star):
     ) -> bool:
         if not isinstance(event, AiocqhttpMessageEvent):
             return False
-        try:
-            resp = await event.bot.call_action(
-                "get_forward_msg", id=str(forward_id)
-            )
-        except Exception as e:
-            logger.warning(f"[保护记录] 获取聊天记录失败: {e}")
+        forward_id = str(forward_id)
+        if not forward_id:
             return False
 
         messages = None
-        if isinstance(resp, dict):
-            messages = resp.get("messages")
-            data = resp.get("data")
-            if messages is None and isinstance(data, dict):
-                messages = data.get("messages")
-        elif isinstance(resp, list):
-            messages = resp
+        try:
+            resp = await event.bot.call_action(
+                "get_forward_msg", id=forward_id
+            )
+            if isinstance(resp, dict):
+                messages = resp.get("messages")
+                data = resp.get("data")
+                if messages is None and isinstance(data, dict):
+                    messages = data.get("messages")
+            elif isinstance(resp, list):
+                messages = resp
+        except Exception as e:
+            logger.warning(f"[保护记录] 获取聊天记录详情失败（仍保存 id）: {e}")
 
-        if not isinstance(messages, list) or not messages:
-            logger.warning(f"[保护记录] 聊天记录为空或格式异常: {resp}")
-            return False
+        if not isinstance(messages, list):
+            messages = None
 
-        await asyncio.to_thread(self.protected_forward.save, messages)
+        await asyncio.to_thread(
+            self.protected_forward.save, forward_id, messages
+        )
         logger.info(
-            f"[保护记录] 已保存 {len(messages)} 个节点，"
-            f"类型={[item.get('type') for item in messages]}"
+            f"[保护记录] 已保存 forward_id={forward_id}, "
+            f"详情节点数={len(messages) if messages else 0}"
         )
         return True
 
@@ -402,10 +405,14 @@ class ParserPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("保护记录状态")
     async def protected_record_status(self, event: AstrMessageEvent):
-        messages = self.protected_forward.load() or []
-        if not messages:
+        forward_id = self.protected_forward.load_id()
+        if not forward_id:
             yield event.plain_result("尚未保存保护记录")
             return
+        messages = self.protected_forward.load_messages() or []
+        logger.info(
+            f"[保护记录] forward_id={forward_id}, 详情节点数={len(messages)}"
+        )
         for index, node in enumerate(messages):
             data = node.get("data") if isinstance(node, dict) else None
             content = data.get("content") if isinstance(data, dict) else None
@@ -416,9 +423,10 @@ class ParserPlugin(Star):
                 for item in content
             ]
             logger.info(f"[保护记录] 节点 {index}: types={types}")
-            for item in content[:2]:
-                logger.info(f"[保护记录] 节点 {index} 内容: {str(item)[:300]}")
-        yield event.plain_result(f"已保存保护记录，共 {len(messages)} 个节点")
+        yield event.plain_result(
+            f"已保存保护记录 forward_id={forward_id}，"
+            f"详情节点数={len(messages)}"
+        )
 
     @staticmethod
     def _describe_segment(seg: object) -> str:

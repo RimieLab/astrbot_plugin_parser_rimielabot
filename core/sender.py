@@ -439,8 +439,8 @@ class MessageSender:
         if not isinstance(event, AiocqhttpMessageEvent):
             return False
         try:
-            stored = self.protected_forward.load()
-            if not stored:
+            forward_id = self.protected_forward.load_id()
+            if not forward_id:
                 return False
             protected_segs = [self._video_as_file(seg) for seg in segs]
             node = Node(
@@ -449,9 +449,21 @@ class MessageSender:
                 name="解析器",
             )
             node_dict = await node.to_dict()
-            messages = [*stored, node_dict]
+            # 外层合并转发里放两个嵌套的“保护记录”卡片，再接失败资源
+            protect_node = {
+                "type": "node",
+                "data": {
+                    "user_id": str(event.get_self_id()),
+                    "nickname": "解析器",
+                    "content": [
+                        {"type": "forward", "data": {"id": forward_id}}
+                    ],
+                },
+            }
+            messages = [protect_node, protect_node, node_dict]
             logger.info(
-                f"[保护转发] 节点类型: {[item.get('type') for item in messages]}"
+                f"[保护转发] 使用 forward_id={forward_id}, "
+                f"节点类型={[item.get('type') for item in messages]}"
             )
             group_id = event.get_group_id()
             if group_id:
