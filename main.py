@@ -50,6 +50,8 @@ class ParserPlugin(Star):
         self.parser_map: dict[str, BaseParser] = {}
         # 关键词 -> 正则 列表
         self.key_pattern_list: list[tuple[str, re.Pattern[str]]] = []
+        # /dumpmsg 采集模式：记录下一条消息的结构
+        self._dump_next_umo: str | None = None
 
     @staticmethod
     def _read_version() -> str:
@@ -136,6 +138,11 @@ class ParserPlugin(Star):
     async def on_message(self, event: AstrMessageEvent):
         """消息的统一入口"""
         umo = event.unified_msg_origin
+
+        if self._dump_next_umo == umo:
+            self._dump_next_umo = None
+            self._log_message_chain("采集", event)
+            return
 
         # 白名单
         if self.cfg.whitelist and umo not in self.cfg.whitelist:
@@ -292,6 +299,38 @@ class ParserPlugin(Star):
             )
         except Exception as e:
             logger.debug(f"添加成功表情失败: {e}")
+
+    @staticmethod
+    def _describe_segment(seg: object) -> str:
+        name = type(seg).__name__
+        parts: list[str] = []
+        for attr in ("type", "file", "url", "path", "text", "data", "nodes", "chain"):
+            value = getattr(seg, attr, None)
+            if value is None:
+                continue
+            if attr in ("nodes", "chain") and isinstance(value, (list, tuple)):
+                parts.append(f"{attr}={[type(item).__name__ for item in value]}")
+            else:
+                parts.append(f"{attr}={str(value)[:300]}")
+        return f"{name}({', '.join(parts)})"
+
+    def _log_message_chain(self, tag: str, event: AstrMessageEvent) -> None:
+        chain = event.get_messages()
+        logger.info(f"[调试] {tag} 消息链: {[self._describe_segment(seg) for seg in chain]}")
+        raw = getattr(event.message_obj, "raw_message", None)
+        if raw is not None:
+            logger.info(f"[调试] {tag} raw_message: {str(raw)[:1000]}")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("dumpmsg", alias={"调试消息"})
+    async def dump_msg(self, event: AstrMessageEvent):
+        """输出当前消息链结构；发送 /dumpmsg 采集 后记录下一条消息。"""
+        self._log_message_chain("当前", event)
+        if "采集" in event.message_str:
+            self._dump_next_umo = event.unified_msg_origin
+            yield event.plain_result("已开启采集：请发送特殊聊天记录")
+        else:
+            yield event.plain_result("已输出当前消息链调试日志")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("开启解析")
