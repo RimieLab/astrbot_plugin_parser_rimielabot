@@ -2,13 +2,22 @@
 
 import asyncio
 import re
+import time
 from pathlib import Path
 
 from astrbot.api import logger
 from astrbot.api.event import filter
 from astrbot.api.star import Context, Star
 from astrbot.core import AstrBotConfig
-from astrbot.core.message.components import At, Image, Json, Plain, Reply
+from astrbot.core.message.components import (
+    At,
+    Image,
+    Json,
+    Node,
+    Nodes,
+    Plain,
+    Reply,
+)
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
@@ -50,6 +59,8 @@ class ParserPlugin(Star):
         self.parser_map: dict[str, BaseParser] = {}
         # 关键词 -> 正则 列表
         self.key_pattern_list: list[tuple[str, re.Pattern[str]]] = []
+        # /测试转发 收集会话：umo -> {owner, next, items, created_at}
+        self._forward_test_sessions: dict[str, dict] = {}
 
     @staticmethod
     def _read_version() -> str:
@@ -152,6 +163,56 @@ class ParserPlugin(Star):
 
         seg1 = chain[0]
         text = event.message_str
+
+        # /测试转发：用数字回复消息进行标记
+        session = self._forward_test_sessions.get(umo)
+        if session is not None:
+            if time.monotonic() - session["created_at"] > 600:
+                self._forward_test_sessions.pop(umo, None)
+                session = None
+            elif str(event.get_sender_id()) != session["owner"]:
+                session = None
+
+        if session is not None:
+            marker = text.strip()
+            reply_seg = next(
+                (seg for seg in chain if isinstance(seg, Reply)), None
+            )
+            if reply_seg is not None and marker.isdigit():
+                number = int(marker)
+                if number != session["next"]:
+                    await event.send(
+                        event.chain_result(
+                            [
+                                Plain(
+                                    f"请按顺序标记，下一条应为 "
+                                    f"{session['next']}"
+                                )
+                            ]
+                        )
+                    )
+                    return
+                content = [
+                    seg
+                    for seg in (reply_seg.chain or [])
+                    if not isinstance(seg, Reply)
+                ]
+                if not content:
+                    await event.send(
+                        event.chain_result([Plain("无法读取被回复消息的内容")])
+                    )
+                    return
+                session["items"][number] = {
+                    "content": content,
+                    "sender_id": reply_seg.sender_id,
+                    "nickname": reply_seg.sender_nickname,
+                    "time": reply_seg.time,
+                }
+                session["next"] = number + 1
+                await event.send(
+                    event.chain_result([Plain(f"已标记 {number}")])
+                )
+                return
 
         # 指定机制：专门@其他bot的消息不解析
         self_id = event.get_self_id()
@@ -292,6 +353,57 @@ class ParserPlugin(Star):
             )
         except Exception as e:
             logger.debug(f"添加成功表情失败: {e}")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("测试转发")
+    async def forward_test_begin(self, event: AstrMessageEvent):
+        """开始收集要合并转发的消息。"""
+        umo = event.unified_msg_origin
+        self._forward_test_sessions[umo] = {
+            "owner": str(event.get_sender_id()),
+            "next": 1,
+            "items": {},
+            "created_at": time.monotonic(),
+        }
+        yield event.plain_result(
+            "已开始测试转发：请依次回复要合并的消息，并发送数字 1、2、3…"
+            "完成后发送 /测试转发开始"
+        )
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("测试转发取消")
+    async def forward_test_cancel(self, event: AstrMessageEvent):
+        self._forward_test_sessions.pop(event.unified_msg_origin, None)
+        yield event.plain_result("已取消测试转发")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("测试转发开始")
+    async def forward_test_finish(self, event: AstrMessageEvent):
+        umo = event.unified_msg_origin
+        session = self._forward_test_sessions.pop(umo, None)
+        if session is None:
+            yield event.plain_result("没有进行中的测试转发，请先发送 /测试转发")
+            return
+        items = session["items"]
+        if not items:
+            yield event.plain_result("还没有标记任何消息")
+            return
+        nodes = []
+        for number in sorted(items):
+            item = items[number]
+            nodes.append(
+                Node(
+                    content=item["content"],
+                    uin=str(item["sender_id"] or event.get_self_id()),
+                    name=item["nickname"] or "解析器",
+                )
+            )
+        try:
+            await event.send(event.chain_result([Nodes(nodes)]))
+            logger.info(f"[测试转发] 已合并 {len(nodes)} 条消息")
+        except Exception as e:
+            logger.warning(f"[测试转发] 合并转发失败: {e}")
+            yield event.plain_result("合并转发失败，请查看日志")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("开启解析")
