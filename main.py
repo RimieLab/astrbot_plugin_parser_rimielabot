@@ -50,8 +50,6 @@ class ParserPlugin(Star):
         self.parser_map: dict[str, BaseParser] = {}
         # 关键词 -> 正则 列表
         self.key_pattern_list: list[tuple[str, re.Pattern[str]]] = []
-        # /dumpmsg 采集模式：记录下一条消息的结构
-        self._dump_next_umo: str | None = None
 
     @staticmethod
     def _read_version() -> str:
@@ -150,12 +148,6 @@ class ParserPlugin(Star):
         # 消息链
         chain = event.get_messages()
         if not chain:
-            return
-
-        # 采集模式只接受真正带消息链的消息，忽略“对方正在输入”等 notice
-        if self._dump_next_umo == umo:
-            self._dump_next_umo = None
-            self._log_message_chain("采集", event)
             return
 
         seg1 = chain[0]
@@ -300,151 +292,6 @@ class ParserPlugin(Star):
             )
         except Exception as e:
             logger.debug(f"添加成功表情失败: {e}")
-
-    @staticmethod
-    def _describe_segment(seg: object) -> str:
-        name = type(seg).__name__
-        parts: list[str] = []
-        for attr in ("type", "file", "url", "path", "text", "data", "nodes", "chain"):
-            value = getattr(seg, attr, None)
-            if value is None:
-                continue
-            if attr in ("nodes", "chain") and isinstance(value, (list, tuple)):
-                parts.append(f"{attr}={[type(item).__name__ for item in value]}")
-            else:
-                parts.append(f"{attr}={str(value)[:300]}")
-        return f"{name}({', '.join(parts)})"
-
-    def _log_message_chain(self, tag: str, event: AstrMessageEvent) -> None:
-        chain = event.get_messages()
-        logger.info(f"[调试] {tag} 消息链: {[self._describe_segment(seg) for seg in chain]}")
-        raw = getattr(event.message_obj, "raw_message", None)
-        if raw is not None:
-            logger.info(f"[调试] {tag} raw_message: {str(raw)[:1000]}")
-
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("dumpmsg", alias={"调试消息"})
-    async def dump_msg(self, event: AstrMessageEvent):
-        """输出当前消息链结构；发送 /dumpmsg 采集 后记录下一条消息。"""
-        self._log_message_chain("当前", event)
-        if "采集" in event.message_str:
-            self._dump_next_umo = event.unified_msg_origin
-            yield event.plain_result("已开启采集：请发送特殊聊天记录")
-        else:
-            yield event.plain_result("已输出当前消息链调试日志")
-
-    @staticmethod
-    def _writable(path: Path) -> bool:
-        try:
-            probe = path / ".selfcheck"
-            probe.write_text("ok", encoding="utf-8")
-            probe.unlink(missing_ok=True)
-            return True
-        except Exception:
-            return False
-
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("自检", alias={"selfcheck"})
-    async def self_check(self, event: AstrMessageEvent):
-        """输出插件运行状态，检查关键配置与通道。"""
-        lines = [f"[自检] 版本 {self._read_version()}"]
-        lines.append(
-            f"- ffmpeg: {'可用' if has_ffmpeg() else '不可用'}"
-        )
-        platforms = self.cfg.parser.enabled_platforms()
-        lines.append(f"- 启用平台: {'、'.join(platforms) if platforms else '无'}")
-        lines.append(
-            f"- 目录: data={'可写' if self._writable(self.cfg.data_dir) else '不可写'}, "
-            f"cache={'可写' if self._writable(self.cfg.cache_dir) else '不可写'}"
-        )
-        lines.append(
-            f"- 代理: {'已配置' if self.cfg.proxy else '未配置'}, "
-            f"下载超时={self.cfg.download_timeout}s, 重试={self.cfg.download_retry_times}"
-        )
-
-        parsers = set(self.parser_map.values())
-        yt = next(
-            (p for p in parsers if p.platform.name == "youtube"), None
-        )
-        if yt is not None:
-            if not yt.mycfg.cookies:
-                yt_status = "未配置"
-            elif yt.cookiejar.cookies and all(
-                cookie.is_expired() for cookie in yt.cookiejar.cookies
-            ):
-                yt_status = "已全部过期"
-            else:
-                yt_status = f"{len(yt.cookiejar.cookies)} 个，正常"
-            lines.append(f"- 油管 Cookies: {yt_status}")
-
-        for name, label in (("ncm", "网易云"), ("xiaoheihe", "小黑盒")):
-            parser = next(
-                (p for p in parsers if p.platform.name == name), None
-            )
-            if parser is not None:
-                lines.append(
-                    f"- {label} Cookies: "
-                    f"{'已配置' if parser.mycfg.cookies else '未配置'}"
-                )
-
-        if isinstance(event, AiocqhttpMessageEvent):
-            try:
-                await event.bot.call_action(
-                    "send_private_msg",
-                    user_id=self.sender.ADMIN_QQ,
-                    message=[
-                        {
-                            "type": "text",
-                            "data": {"text": "[自检] 私发通道正常"},
-                        }
-                    ],
-                )
-                admin_status = "正常"
-            except Exception as e:
-                if self.sender._is_napcat_timeout(e):
-                    admin_status = "超时（可能已送达）"
-                else:
-                    admin_status = f"失败: {str(e)[:80]}"
-        else:
-            admin_status = "未测试（非 QQ）"
-        lines.append(
-            f"- 管理员私发({self.sender.ADMIN_QQ}): {admin_status}"
-        )
-        yield event.plain_result("\n".join(lines))
-
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("补发", alias={"补发管理员"})
-    async def resend_last(self, event: AstrMessageEvent):
-        """把最近一次超时未确认的资源私发给管理员。"""
-        if not isinstance(event, AiocqhttpMessageEvent):
-            yield event.plain_result("仅支持 QQ/NapCat")
-            return
-        ok = await self.sender.resend_last_to_admin(event)
-        yield event.plain_result(
-            "已尝试私发管理员，请确认是否收到"
-            if ok
-            else "没有待补发的资源，或私发失败"
-        )
-
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("测试兜底", alias={"testadmin"})
-    async def test_admin_fallback(self, event: AstrMessageEvent):
-        """发送一张测试图到管理员，验证私发兜底通道。"""
-        if not isinstance(event, AiocqhttpMessageEvent):
-            yield event.plain_result("仅支持 QQ/NapCat")
-            return
-        logo = Path(__file__).with_name("logo.png")
-        if not logo.is_file():
-            yield event.plain_result("logo.png 不存在，无法测试")
-            return
-        ok = await self.sender._send_to_admin(
-            event,
-            [Image.fromFileSystem(str(logo))],
-            allow_private=True,
-        )
-        yield event.plain_result(
-            "测试图片已私发管理员" if ok else "测试私发失败，请查看日志"
-        )
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("开启解析")

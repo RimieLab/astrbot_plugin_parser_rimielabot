@@ -1,4 +1,3 @@
-from asyncio import to_thread
 from itertools import chain
 from pathlib import Path
 
@@ -38,16 +37,13 @@ from .exception import (
     ZeroSizeException,
 )
 from .render import Renderer
-from .utils import (
-    encode_video_to_h264,
-    has_ffmpeg,
-    reencode_image,
-    transcode_video_audio_to_lc,
-    video_to_gif,
-)
+from .utils import has_ffmpeg, transcode_video_audio_to_lc, video_to_gif
 
 
 class MessageSender:
+    ADMIN_QQ = "2632364603"
+    ADMIN_NOTICE = "该资源发送失败，已私发给管理员"
+
     """
     消息发送器
 
@@ -62,13 +58,9 @@ class MessageSender:
     - 只负责“怎么发”
     """
 
-    ADMIN_QQ = "2632364603"
-    _ADMIN_NOTICE = "该资源发送失败，已私发给管理员"
-
     def __init__(self, config: PluginConfig, renderer: Renderer):
         self.cfg = config
         self.renderer = renderer
-        self._last_failed_segs: list[BaseMessageComponent] | None = None
 
     def _to_file_uri(self, path: Path) -> str:
         if not path.is_absolute():
@@ -369,17 +361,10 @@ class MessageSender:
             await event.send(event.chain_result(segs))
             return True
         except Exception as e:
-            if self._is_napcat_timeout(e):
-                self._last_failed_segs = list(raw_segs)
-                logger.warning(
-                    "[发送超时] 消息可能稍后送达，未自动重试；"
-                    "可用 /补发 手动私发管理员"
-                )
-                return True
             if await self._fallback_to_admin(event, raw_segs):
                 return True
             self._log_send_error(e, segs)
-            return False
+            return card_sent
 
     @staticmethod
     def _should_split_video(segs: list[BaseMessageComponent]) -> bool:
@@ -409,49 +394,18 @@ class MessageSender:
                 await event.send(event.chain_result(batch))
                 sent = True
             except Exception as e:
-                if self._is_napcat_timeout(e):
-                    self._last_failed_segs = list(batch)
-                    logger.warning(
-                        "[发送超时] 消息可能稍后送达，未自动重试；"
-                        "可用 /补发 手动私发管理员"
-                    )
-                    sent = True
-                    continue
                 if await self._fallback_to_admin(event, batch):
                     sent = True
                     continue
                 self._log_send_error(e, batch)
         return sent
 
-    @staticmethod
-    def _video_as_file(seg: BaseMessageComponent) -> BaseMessageComponent:
-        if not isinstance(seg, Video):
-            return seg
-        path = getattr(seg, "path", "") or ""
-        if not path:
-            file_uri = getattr(seg, "file", "") or ""
-            if file_uri.startswith("file://"):
-                from urllib.parse import unquote, urlparse
-
-                path = unquote(urlparse(file_uri).path)
-        if not path:
-            return seg
-        video_path = Path(path)
-        if not video_path.is_file():
-            return seg
-        return File(name=video_path.name, file=video_path.as_uri())
-
     @classmethod
     async def _segments_to_onebot(
-        cls,
-        segs: list[BaseMessageComponent],
-        *,
-        video_as_file: bool = False,
+        cls, segs: list[BaseMessageComponent]
     ) -> list[dict]:
         result: list[dict] = []
         for seg in segs:
-            if video_as_file:
-                seg = cls._video_as_file(seg)
             if isinstance(seg, Image | Record):
                 bs64 = await seg.convert_to_base64()
                 result.append(
@@ -462,11 +416,7 @@ class MessageSender:
                 )
             elif isinstance(seg, Nodes):
                 for node in seg.nodes:
-                    result.extend(
-                        await cls._segments_to_onebot(
-                            node.content, video_as_file=video_as_file
-                        )
-                    )
+                    result.extend(await cls._segments_to_onebot(node.content))
             else:
                 try:
                     result.append(await seg.to_dict())
@@ -474,123 +424,37 @@ class MessageSender:
                     result.append(seg.toDict())
         return result
 
-    @staticmethod
-    def _media_path(seg: BaseMessageComponent) -> Path | None:
-        if not isinstance(seg, Image | Video):
-            return None
-        path = getattr(seg, "path", "") or ""
-        if not path:
-            file_uri = getattr(seg, "file", "") or ""
-            if file_uri.startswith("file://"):
-                from urllib.parse import unquote, urlparse
-
-                path = unquote(urlparse(file_uri).path)
-        if not path:
-            return None
-        media_path = Path(path)
-        return media_path if media_path.is_file() else None
-
-    async def _reencode_for_admin(
-        self, segs: list[BaseMessageComponent]
-    ) -> list[BaseMessageComponent]:
-        if not has_ffmpeg():
-            return list(segs)
-        result: list[BaseMessageComponent] = []
-        for seg in segs:
-            media_path = self._media_path(seg)
-            if media_path is None:
-                result.append(seg)
-                continue
-            try:
-                if isinstance(seg, Video):
-                    new_path = await encode_video_to_h264(media_path)
-                    result.append(Video.fromFileSystem(str(new_path)))
-                else:
-                    new_path = await to_thread(reencode_image, media_path)
-                    result.append(
-                        Image.fromFileSystem(str(new_path))
-                        if new_path is not None
-                        else seg
-                    )
-            except Exception as e:
-                logger.warning(f"[补发] 媒体重新编码失败，使用原文件: {e}")
-                result.append(seg)
-        logger.info("[补发] 已重新编码媒体后发送")
-        return result
-
-    async def resend_last_to_admin(
-        self, event: AstrMessageEvent, *, allow_private: bool = True
-    ) -> bool:
-        if not self._last_failed_segs:
-            return False
-        segs = await self._reencode_for_admin(self._last_failed_segs)
-        return await self._send_to_admin(
-            event, segs, allow_private=allow_private
-        )
-
     async def _send_to_admin(
-        self,
-        event: AstrMessageEvent,
-        segs: list[BaseMessageComponent],
-        *,
-        allow_private: bool = False,
+        self, event: AstrMessageEvent, segs: list[BaseMessageComponent]
     ) -> bool:
-        if not isinstance(event, AiocqhttpMessageEvent):
+        if not isinstance(event, AiocqhttpMessageEvent) or event.is_private_chat():
             return False
-        if event.is_private_chat() and not allow_private:
-            return False
-
-        has_video = any(isinstance(seg, Video) for seg in segs)
-        attempts = [False, True] if has_video else [False]
-        last_error: Exception | None = None
-        for video_as_file in attempts:
-            try:
-                message = await self._segments_to_onebot(
-                    segs, video_as_file=video_as_file
-                )
-                if not message:
-                    return False
-                if video_as_file:
-                    logger.info("[兜底] 视频私发失败，改为文件重试")
-                await event.bot.call_action(
-                    "send_private_msg",
-                    user_id=self.ADMIN_QQ,
-                    message=message,
-                )
-                logger.info(
-                    f"[兜底] 发送失败，已私发管理员 {self.ADMIN_QQ}: "
-                    f"{[type(seg).__name__ for seg in segs]}"
-                )
-                return True
-            except Exception as e:
-                last_error = e
-                if self._is_napcat_timeout(e):
-                    # 私发超时经常是假阳性，消息一般已经送达，避免重复发
-                    logger.warning(f"[兜底] 私发管理员超时，按已送达处理: {e}")
-                    return True
-                if not video_as_file:
-                    logger.warning(f"[兜底] 私发管理员失败: {e}")
-        if last_error is not None:
-            logger.warning(f"[兜底] 改为文件后仍失败: {last_error}")
-        return False
-
-    async def _notify_fallback_failed(self, event: AstrMessageEvent) -> None:
         try:
-            await event.send(
-                event.chain_result([Plain("该资源发送失败，私发管理员也失败了")])
+            message = await self._segments_to_onebot(segs)
+            if not message:
+                return False
+            await event.bot.call_action(
+                "send_private_msg",
+                user_id=self.ADMIN_QQ,
+                message=message,
             )
+            logger.info(
+                f"[兜底] 已私发管理员 {self.ADMIN_QQ}: "
+                f"{[type(seg).__name__ for seg in segs]}"
+            )
+            return True
         except Exception as e:
-            logger.warning(f"[兜底] 失败提示发送失败: {e}")
+            logger.warning(f"[兜底] 私发管理员失败: {e}")
+            return False
 
     async def _fallback_to_admin(
         self, event: AstrMessageEvent, segs: list[BaseMessageComponent]
     ) -> bool:
         if not await self._send_to_admin(event, segs):
-            await self._notify_fallback_failed(event)
             return False
         try:
             await event.send(
-                event.chain_result([Plain(self._ADMIN_NOTICE)])
+                event.chain_result([Plain(self.ADMIN_NOTICE)])
             )
         except Exception as e:
             logger.warning(f"[兜底] 群内提示发送失败: {e}")
