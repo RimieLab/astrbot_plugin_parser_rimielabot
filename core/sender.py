@@ -1,3 +1,4 @@
+from asyncio import to_thread
 from itertools import chain
 from pathlib import Path
 
@@ -40,6 +41,7 @@ from .render import Renderer
 from .utils import (
     encode_video_to_h264,
     has_ffmpeg,
+    reencode_image,
     transcode_video_audio_to_lc,
     video_to_gif,
 )
@@ -367,8 +369,8 @@ class MessageSender:
             return True
         except Exception as e:
             if self._is_napcat_timeout(e):
-                if any(isinstance(seg, Video) for seg in raw_segs):
-                    return await self._retry_video_reencoded(event, raw_segs)
+                if any(isinstance(seg, Image | Video) for seg in raw_segs):
+                    return await self._retry_media_reencoded(event, raw_segs)
                 # 非视频 timeout 多为假阳性，消息通常稍后送达
                 logger.warning(
                     "[兜底] 发送超时，按可能已送达处理，不私发管理员"
@@ -408,8 +410,8 @@ class MessageSender:
                 sent = True
             except Exception as e:
                 if self._is_napcat_timeout(e):
-                    if any(isinstance(seg, Video) for seg in batch):
-                        if await self._retry_video_reencoded(event, batch):
+                    if any(isinstance(seg, Image | Video) for seg in batch):
+                        if await self._retry_media_reencoded(event, batch):
                             sent = True
                         continue
                     logger.warning(
@@ -475,8 +477,8 @@ class MessageSender:
         return result
 
     @staticmethod
-    def _video_path(seg: BaseMessageComponent) -> Path | None:
-        if not isinstance(seg, Video):
+    def _media_path(seg: BaseMessageComponent) -> Path | None:
+        if not isinstance(seg, Image | Video):
             return None
         path = getattr(seg, "path", "") or ""
         if not path:
@@ -487,50 +489,56 @@ class MessageSender:
                 path = unquote(urlparse(file_uri).path)
         if not path:
             return None
-        video_path = Path(path)
-        return video_path if video_path.is_file() else None
+        media_path = Path(path)
+        return media_path if media_path.is_file() else None
 
-    async def _retry_video_reencoded(
+    async def _retry_media_reencoded(
         self, event: AstrMessageEvent, segs: list[BaseMessageComponent]
     ) -> bool:
-        """视频超时后重新编码改变哈希，再发一次。"""
-        if not has_ffmpeg():
+        """图片/视频超时后重新编码改变哈希，再发一次。"""
+        has_video = any(isinstance(seg, Video) for seg in segs)
+        if has_video and not has_ffmpeg():
             if await self._fallback_to_admin(event, segs):
                 return True
             await self._notify_fallback_failed(event)
             return False
 
         new_segs: list[BaseMessageComponent] = []
-        has_video = False
-        try:
-            for seg in segs:
-                video_path = self._video_path(seg)
-                if video_path is None:
-                    new_segs.append(seg)
-                    continue
-                new_path = await encode_video_to_h264(video_path)
-                new_segs.append(Video.fromFileSystem(str(new_path)))
-                has_video = True
-        except Exception as e:
-            logger.warning(f"[兜底] 视频重新编码失败: {e}")
+        has_media = False
+        for seg in segs:
+            media_path = self._media_path(seg)
+            if media_path is None:
+                new_segs.append(seg)
+                continue
+            try:
+                if isinstance(seg, Video):
+                    new_path = await encode_video_to_h264(media_path)
+                    new_segs.append(Video.fromFileSystem(str(new_path)))
+                    has_media = True
+                elif isinstance(seg, Image):
+                    new_path = await to_thread(reencode_image, media_path)
+                    if new_path is not None:
+                        new_segs.append(Image.fromFileSystem(str(new_path)))
+                        has_media = True
+                    else:
+                        new_segs.append(seg)
+            except Exception as e:
+                logger.warning(f"[兜底] 媒体重新编码失败: {e}")
+                new_segs.append(seg)
+
+        if not has_media:
             if await self._fallback_to_admin(event, segs):
                 return True
             await self._notify_fallback_failed(event)
             return False
 
-        if not has_video:
-            if await self._fallback_to_admin(event, segs):
-                return True
-            await self._notify_fallback_failed(event)
-            return False
-
         try:
-            logger.info("[兜底] 视频超时，重新编码后重试")
+            logger.info("[兜底] 媒体超时，重新编码后重试")
             await event.send(event.chain_result(new_segs))
-            logger.info("[兜底] 重新编码的视频发送成功")
+            logger.info("[兜底] 重新编码的媒体发送成功")
             return True
         except Exception as e:
-            logger.warning(f"[兜底] 重新编码的视频仍发送失败: {e}")
+            logger.warning(f"[兜底] 重新编码的媒体仍发送失败: {e}")
 
         if await self._fallback_to_admin(event, new_segs):
             return True

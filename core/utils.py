@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import unquote, urlparse
 
+from PIL import Image
+
 from astrbot.api import logger
 
 K = TypeVar("K")
@@ -94,6 +96,27 @@ async def exec_ffmpeg_cmd(cmd: list[str]) -> None:
             error_msg = (stderr or b"").decode(errors="ignore").strip()
             raise RuntimeError(f"ffmpeg 执行失败: {error_msg}")
     await asyncio.to_thread(release_memory)
+
+
+def reencode_image(path: Path, quality: int = 88) -> Path | None:
+    """重新编码图片以改变哈希，用于绕过 QQ 的图片封禁。"""
+    if path.suffix.lower() == ".gif":
+        return None
+    output = path.with_name(f"{path.stem}_re.jpg")
+    if output.exists() and output.stat().st_size > 0:
+        return output
+    try:
+        with Image.open(path) as img:
+            img.convert("RGB").save(
+                output,
+                "JPEG",
+                quality=quality,
+                optimize=True,
+            )
+    except Exception as e:
+        logger.warning(f"图片重新编码失败: {path.name}, {e}")
+        return None
+    return output if output.exists() else None
 
 
 def has_ffmpeg() -> bool:
