@@ -400,12 +400,35 @@ class MessageSender:
                 self._log_send_error(e, batch)
         return sent
 
+    @staticmethod
+    def _video_as_file(seg: BaseMessageComponent) -> BaseMessageComponent:
+        if not isinstance(seg, Video):
+            return seg
+        path = getattr(seg, "path", "") or ""
+        if not path:
+            file_uri = getattr(seg, "file", "") or ""
+            if file_uri.startswith("file://"):
+                from urllib.parse import unquote, urlparse
+
+                path = unquote(urlparse(file_uri).path)
+        if not path:
+            return seg
+        video_path = Path(path)
+        if not video_path.is_file():
+            return seg
+        return File(name=video_path.name, file=video_path.as_uri())
+
     @classmethod
     async def _segments_to_onebot(
-        cls, segs: list[BaseMessageComponent]
+        cls,
+        segs: list[BaseMessageComponent],
+        *,
+        video_as_file: bool = False,
     ) -> list[dict]:
         result: list[dict] = []
         for seg in segs:
+            if video_as_file:
+                seg = cls._video_as_file(seg)
             if isinstance(seg, Image | Record):
                 bs64 = await seg.convert_to_base64()
                 result.append(
@@ -416,7 +439,11 @@ class MessageSender:
                 )
             elif isinstance(seg, Nodes):
                 for node in seg.nodes:
-                    result.extend(await cls._segments_to_onebot(node.content))
+                    result.extend(
+                        await cls._segments_to_onebot(
+                            node.content, video_as_file=video_as_file
+                        )
+                    )
             else:
                 try:
                     result.append(await seg.to_dict())
@@ -429,23 +456,36 @@ class MessageSender:
     ) -> bool:
         if not isinstance(event, AiocqhttpMessageEvent) or event.is_private_chat():
             return False
-        try:
-            message = await self._segments_to_onebot(segs)
-            if not message:
-                return False
-            await event.bot.call_action(
-                "send_private_msg",
-                user_id=self._ADMIN_QQ,
-                message=message,
-            )
-            logger.info(
-                f"[兜底] 发送失败，已私发管理员 {self._ADMIN_QQ}: "
-                f"{[type(seg).__name__ for seg in segs]}"
-            )
-            return True
-        except Exception as e:
-            logger.warning(f"[兜底] 私发管理员失败: {e}")
-            return False
+
+        has_video = any(isinstance(seg, Video) for seg in segs)
+        attempts = [False, True] if has_video else [False]
+        last_error: Exception | None = None
+        for video_as_file in attempts:
+            try:
+                message = await self._segments_to_onebot(
+                    segs, video_as_file=video_as_file
+                )
+                if not message:
+                    return False
+                if video_as_file:
+                    logger.info("[兜底] 视频私发失败，改为文件重试")
+                await event.bot.call_action(
+                    "send_private_msg",
+                    user_id=self._ADMIN_QQ,
+                    message=message,
+                )
+                logger.info(
+                    f"[兜底] 发送失败，已私发管理员 {self._ADMIN_QQ}: "
+                    f"{[type(seg).__name__ for seg in segs]}"
+                )
+                return True
+            except Exception as e:
+                last_error = e
+                if not video_as_file:
+                    logger.warning(f"[兜底] 私发管理员失败: {e}")
+        if last_error is not None:
+            logger.warning(f"[兜底] 改为文件后仍失败: {last_error}")
+        return False
 
     async def _fallback_to_admin(
         self, event: AstrMessageEvent, segs: list[BaseMessageComponent]
