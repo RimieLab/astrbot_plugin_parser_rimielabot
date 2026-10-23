@@ -367,7 +367,7 @@ class MessageSender:
             if await self._fallback_to_admin(event, raw_segs):
                 return True
             self._log_send_error(e, segs)
-            return card_sent
+            return False
 
     @staticmethod
     def _should_split_video(segs: list[BaseMessageComponent]) -> bool:
@@ -488,6 +488,10 @@ class MessageSender:
                 return True
             except Exception as e:
                 last_error = e
+                if self._is_napcat_timeout(e):
+                    # 私发超时经常是假阳性，消息一般已经送达，避免重复发
+                    logger.warning(f"[兜底] 私发管理员超时，按已送达处理: {e}")
+                    return True
                 if not video_as_file:
                     logger.warning(f"[兜底] 私发管理员失败: {e}")
         if last_error is not None:
