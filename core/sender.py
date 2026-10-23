@@ -408,6 +408,26 @@ class MessageSender:
                 self._log_send_error(e, batch)
         return sent
 
+    @staticmethod
+    def _video_as_file(seg: BaseMessageComponent) -> BaseMessageComponent:
+        """合并转发里的本地视频 NapCat 无法上传，改用 File 节点。"""
+        if not isinstance(seg, Video):
+            return seg
+        path = getattr(seg, "path", "") or ""
+        if not path:
+            file_uri = getattr(seg, "file", "") or ""
+            if file_uri.startswith("file://"):
+                from urllib.parse import unquote, urlparse
+
+                path = unquote(urlparse(file_uri).path)
+        if not path:
+            return seg
+        video_path = Path(path)
+        if not video_path.is_file():
+            return seg
+        logger.info(f"[保护转发] 视频改用文件节点: {video_path.name}")
+        return File(name=video_path.name, file=video_path.as_uri())
+
     async def _try_protected_forward(
         self,
         event: AstrMessageEvent,
@@ -422,8 +442,9 @@ class MessageSender:
             stored = self.protected_forward.load()
             if not stored:
                 return False
+            protected_segs = [self._video_as_file(seg) for seg in segs]
             node = Node(
-                content=list(segs),
+                content=protected_segs,
                 uin=str(event.get_self_id()),
                 name="解析器",
             )
