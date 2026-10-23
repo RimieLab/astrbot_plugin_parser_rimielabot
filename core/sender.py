@@ -176,13 +176,13 @@ class MessageSender:
             await event.send(event.chain_result([self._image_from_path(image_path)]))
             return True
         except Exception as e:
-            if await self._fallback_to_admin(
-                event, [self._image_from_path(image_path)]
-            ):
-                return True
             if self._is_napcat_timeout(e):
                 # NapCat 常见假超时：卡片通常已经送达，按成功处理避免重复兜底
                 logger.warning(f"发送预览卡片超时（NapCat 可能已送达）： error={e}")
+                return True
+            if await self._fallback_to_admin(
+                event, [self._image_from_path(image_path)]
+            ):
                 return True
             logger.error(f"发送预览卡片失败： error={e}")
             return False
@@ -361,6 +361,9 @@ class MessageSender:
             await event.send(event.chain_result(segs))
             return True
         except Exception as e:
+            if self._is_napcat_timeout(e) and self._is_soft_media(raw_segs):
+                logger.warning("[兜底] 图片超时按已送达处理，不重复私发")
+                return True
             if await self._fallback_to_admin(event, raw_segs):
                 return True
             self._log_send_error(e, segs)
@@ -394,6 +397,10 @@ class MessageSender:
                 await event.send(event.chain_result(batch))
                 sent = True
             except Exception as e:
+                if self._is_napcat_timeout(e) and self._is_soft_media(batch):
+                    logger.warning("[兜底] 图片超时按已送达处理，不重复私发")
+                    sent = True
+                    continue
                 if await self._fallback_to_admin(event, batch):
                     sent = True
                     continue
@@ -487,10 +494,31 @@ class MessageSender:
             logger.warning(f"[兜底] 改为文件后仍失败: {last_error}")
         return False
 
+    @classmethod
+    def _is_soft_media(cls, segs: list[BaseMessageComponent]) -> bool:
+        """只包含图片/文字时，NapCat 超时通常是假阳性。"""
+        for seg in segs:
+            if isinstance(seg, Video | File):
+                return False
+            if isinstance(seg, Nodes) and not cls._is_soft_media(
+                [item for node in seg.nodes for item in node.content]
+            ):
+                return False
+        return True
+
+    async def _notify_fallback_failed(self, event: AstrMessageEvent) -> None:
+        try:
+            await event.send(
+                event.chain_result([Plain("该资源发送失败，私发管理员也失败了")])
+            )
+        except Exception as e:
+            logger.warning(f"[兜底] 失败提示发送失败: {e}")
+
     async def _fallback_to_admin(
         self, event: AstrMessageEvent, segs: list[BaseMessageComponent]
     ) -> bool:
         if not await self._send_to_admin(event, segs):
+            await self._notify_fallback_failed(event)
             return False
         try:
             await event.send(
