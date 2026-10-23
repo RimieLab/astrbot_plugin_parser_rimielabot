@@ -370,7 +370,10 @@ class ParserPlugin(Star):
             return False
 
         await asyncio.to_thread(self.protected_forward.save, messages)
-        logger.info(f"[保护记录] 已保存 {len(messages)} 个节点")
+        logger.info(
+            f"[保护记录] 已保存 {len(messages)} 个节点，"
+            f"类型={[item.get('type') for item in messages]}"
+        )
         return True
 
     @filter.permission_type(filter.PermissionType.ADMIN)

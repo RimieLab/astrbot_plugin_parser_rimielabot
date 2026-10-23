@@ -429,6 +429,9 @@ class MessageSender:
             )
             node_dict = await node.to_dict()
             messages = [*stored, node_dict]
+            logger.info(
+                f"[保护转发] 节点类型: {[item.get('type') for item in messages]}"
+            )
             group_id = event.get_group_id()
             if group_id:
                 await event.bot.call_action(
