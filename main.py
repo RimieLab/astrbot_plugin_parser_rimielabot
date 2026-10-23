@@ -139,11 +139,6 @@ class ParserPlugin(Star):
         """消息的统一入口"""
         umo = event.unified_msg_origin
 
-        if self._dump_next_umo == umo:
-            self._dump_next_umo = None
-            self._log_message_chain("采集", event)
-            return
-
         # 白名单
         if self.cfg.whitelist and umo not in self.cfg.whitelist:
             return
@@ -155,6 +150,12 @@ class ParserPlugin(Star):
         # 消息链
         chain = event.get_messages()
         if not chain:
+            return
+
+        # 采集模式只接受真正带消息链的消息，忽略“对方正在输入”等 notice
+        if self._dump_next_umo == umo:
+            self._dump_next_umo = None
+            self._log_message_chain("采集", event)
             return
 
         seg1 = chain[0]
