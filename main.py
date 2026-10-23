@@ -396,6 +396,71 @@ class ParserPlugin(Star):
             "保护记录已保存" if ok else "保护记录保存失败，请查看日志"
         )
 
+    async def _send_forward_payload(
+        self,
+        event: AiocqhttpMessageEvent,
+        messages: list[dict],
+    ):
+        group_id = event.get_group_id()
+        if group_id:
+            return await event.bot.call_action(
+                "send_group_forward_msg",
+                group_id=group_id,
+                messages=messages,
+            )
+        return await event.bot.call_action(
+            "send_private_forward_msg",
+            user_id=event.get_sender_id(),
+            messages=messages,
+        )
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("保护记录发送", alias={"查看保护记录"})
+    async def send_protected_record(self, event: AstrMessageEvent):
+        """把已保存的保护记录发回当前会话，方便检查内容是否正确。"""
+        if not isinstance(event, AiocqhttpMessageEvent):
+            yield event.plain_result("保护记录仅支持 QQ/NapCat")
+            return
+
+        forward_id = self.protected_forward.load_id()
+        if not forward_id:
+            yield event.plain_result("尚未保存保护记录")
+            return
+
+        protect_node = {
+            "type": "node",
+            "data": {
+                "user_id": str(event.get_self_id()),
+                "nickname": "解析器",
+                "content": [
+                    {"type": "forward", "data": {"id": forward_id}}
+                ],
+            },
+        }
+        try:
+            await self._send_forward_payload(event, [protect_node])
+            yield event.plain_result(
+                f"已发送原保护记录，forward_id={forward_id}"
+            )
+            return
+        except Exception as e:
+            logger.warning(f"[保护记录] 按 id 回发失败: {e}")
+
+        messages = self.protected_forward.load_messages()
+        if not messages:
+            yield event.plain_result(
+                "原记录回发失败，且没有保存的展开内容"
+            )
+            return
+        try:
+            await self._send_forward_payload(event, messages)
+            yield event.plain_result(
+                "原记录 id 回发失败，已发送保存的展开内容"
+            )
+        except Exception as e:
+            logger.warning(f"[保护记录] 回发展开内容失败: {e}")
+            yield event.plain_result("保护记录回发失败，请查看日志")
+
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("清除保护记录")
     async def clear_protected_record(self, event: AstrMessageEvent):
