@@ -8,7 +8,7 @@ from astrbot.api import logger
 from astrbot.api.event import filter
 from astrbot.api.star import Context, Star
 from astrbot.core import AstrBotConfig
-from astrbot.core.message.components import At, Forward, Image, Json, Plain, Reply
+from astrbot.core.message.components import At, Image, Json, Plain, Reply
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
@@ -22,7 +22,6 @@ from .core.debounce import Debouncer
 from .core.download import Downloader
 from .core.exception import ParseException, TipException
 from .core.parsers import BaseParser, BilibiliParser
-from .core.protected_forward import ProtectedForwardStore
 from .core.render import Renderer
 from .core.sender import MessageSender
 from .core.utils import extract_json_url, has_ffmpeg
@@ -43,14 +42,8 @@ class ParserPlugin(Star):
         self.debouncer = Debouncer(self.cfg)
         # 仲裁器
         self.arbiter = EmojiLikeArbiter()
-        # 保护聊天记录（QQ 发送被拦截时使用）
-        self.protected_forward = ProtectedForwardStore(
-            self.cfg.data_dir / "protected_forward.json"
-        )
         # 消息发送器
-        self.sender = MessageSender(
-            self.cfg, self.renderer, self.protected_forward
-        )
+        self.sender = MessageSender(self.cfg, self.renderer)
         # 缓存清理器
         self.cleaner = CacheCleaner(self.cfg)
         # 关键词 -> Parser 映射
@@ -59,8 +52,6 @@ class ParserPlugin(Star):
         self.key_pattern_list: list[tuple[str, re.Pattern[str]]] = []
         # /dumpmsg 采集模式：记录下一条消息的结构
         self._dump_next_umo: str | None = None
-        # /保护记录 采集模式：记录下一条特殊聊天记录
-        self._protect_capture_umo: str | None = None
 
     @staticmethod
     def _read_version() -> str:
@@ -165,28 +156,6 @@ class ParserPlugin(Star):
         if self._dump_next_umo == umo:
             self._dump_next_umo = None
             self._log_message_chain("采集", event)
-            return
-
-        if self._protect_capture_umo == umo:
-            self._protect_capture_umo = None
-            forward = self._find_forward(chain)
-            if forward is None:
-                await event.send(
-                    event.chain_result([Plain("未找到聊天记录，请重新发送 /保护记录")])
-                )
-                return
-            ok = await self._save_protected_forward(event, forward.id)
-            await event.send(
-                event.chain_result(
-                    [
-                        Plain(
-                            "保护记录已保存"
-                            if ok
-                            else "保护记录保存失败，请查看日志"
-                        )
-                    ]
-                )
-            )
             return
 
         seg1 = chain[0]
@@ -331,167 +300,6 @@ class ParserPlugin(Star):
             )
         except Exception as e:
             logger.debug(f"添加成功表情失败: {e}")
-
-    @staticmethod
-    def _find_forward(chain) -> Forward | None:
-        for seg in chain:
-            if isinstance(seg, Forward):
-                return seg
-            if isinstance(seg, Reply) and getattr(seg, "chain", None):
-                for sub in seg.chain:
-                    if isinstance(sub, Forward):
-                        return sub
-        return None
-
-    async def _save_protected_forward(
-        self, event: AstrMessageEvent, forward_id: str
-    ) -> bool:
-        if not isinstance(event, AiocqhttpMessageEvent):
-            return False
-        forward_id = str(forward_id)
-        if not forward_id:
-            return False
-
-        messages = None
-        try:
-            resp = await event.bot.call_action(
-                "get_forward_msg", id=forward_id
-            )
-            if isinstance(resp, dict):
-                messages = resp.get("messages")
-                data = resp.get("data")
-                if messages is None and isinstance(data, dict):
-                    messages = data.get("messages")
-            elif isinstance(resp, list):
-                messages = resp
-        except Exception as e:
-            logger.warning(f"[保护记录] 获取聊天记录详情失败（仍保存 id）: {e}")
-
-        if not isinstance(messages, list):
-            messages = None
-
-        await asyncio.to_thread(
-            self.protected_forward.save, forward_id, messages
-        )
-        logger.info(
-            f"[保护记录] 已保存 forward_id={forward_id}, "
-            f"详情节点数={len(messages) if messages else 0}"
-        )
-        return True
-
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("保护记录", alias={"保护转发"})
-    async def protect_record(self, event: AstrMessageEvent):
-        """保存一条特殊聊天记录，发送超时时与失败资源一起合并转发。"""
-        if not isinstance(event, AiocqhttpMessageEvent):
-            yield event.plain_result("保护记录仅支持 QQ/NapCat")
-            return
-        forward = self._find_forward(event.get_messages())
-        if forward is None:
-            self._protect_capture_umo = event.unified_msg_origin
-            yield event.plain_result("请在下一条消息发送特殊聊天记录")
-            return
-        ok = await self._save_protected_forward(event, forward.id)
-        yield event.plain_result(
-            "保护记录已保存" if ok else "保护记录保存失败，请查看日志"
-        )
-
-    async def _send_forward_payload(
-        self,
-        event: AiocqhttpMessageEvent,
-        messages: list[dict],
-    ):
-        group_id = event.get_group_id()
-        if group_id:
-            return await event.bot.call_action(
-                "send_group_forward_msg",
-                group_id=group_id,
-                messages=messages,
-            )
-        return await event.bot.call_action(
-            "send_private_forward_msg",
-            user_id=event.get_sender_id(),
-            messages=messages,
-        )
-
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("保护记录发送", alias={"查看保护记录"})
-    async def send_protected_record(self, event: AstrMessageEvent):
-        """把已保存的保护记录发回当前会话，方便检查内容是否正确。"""
-        if not isinstance(event, AiocqhttpMessageEvent):
-            yield event.plain_result("保护记录仅支持 QQ/NapCat")
-            return
-
-        forward_id = self.protected_forward.load_id()
-        if not forward_id:
-            yield event.plain_result("尚未保存保护记录")
-            return
-
-        protect_node = {
-            "type": "node",
-            "data": {
-                "user_id": str(event.get_self_id()),
-                "nickname": "解析器",
-                "content": [
-                    {"type": "forward", "data": {"id": forward_id}}
-                ],
-            },
-        }
-        try:
-            await self._send_forward_payload(event, [protect_node])
-            yield event.plain_result(
-                f"已发送原保护记录，forward_id={forward_id}"
-            )
-            return
-        except Exception as e:
-            logger.warning(f"[保护记录] 按 id 回发失败: {e}")
-
-        messages = self.protected_forward.load_messages()
-        if not messages:
-            yield event.plain_result(
-                "原记录回发失败，且没有保存的展开内容"
-            )
-            return
-        try:
-            await self._send_forward_payload(event, messages)
-            yield event.plain_result(
-                "原记录 id 回发失败，已发送保存的展开内容"
-            )
-        except Exception as e:
-            logger.warning(f"[保护记录] 回发展开内容失败: {e}")
-            yield event.plain_result("保护记录回发失败，请查看日志")
-
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("清除保护记录")
-    async def clear_protected_record(self, event: AstrMessageEvent):
-        self.protected_forward.clear()
-        yield event.plain_result("保护记录已清除")
-
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("保护记录状态")
-    async def protected_record_status(self, event: AstrMessageEvent):
-        forward_id = self.protected_forward.load_id()
-        if not forward_id:
-            yield event.plain_result("尚未保存保护记录")
-            return
-        messages = self.protected_forward.load_messages() or []
-        logger.info(
-            f"[保护记录] forward_id={forward_id}, 详情节点数={len(messages)}"
-        )
-        for index, node in enumerate(messages):
-            data = node.get("data") if isinstance(node, dict) else None
-            content = data.get("content") if isinstance(data, dict) else None
-            if not isinstance(content, list):
-                content = []
-            types = [
-                item.get("type") if isinstance(item, dict) else type(item).__name__
-                for item in content
-            ]
-            logger.info(f"[保护记录] 节点 {index}: types={types}")
-        yield event.plain_result(
-            f"已保存保护记录 forward_id={forward_id}，"
-            f"详情节点数={len(messages)}"
-        )
 
     @staticmethod
     def _describe_segment(seg: object) -> str:

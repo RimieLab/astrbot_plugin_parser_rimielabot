@@ -36,7 +36,6 @@ from .exception import (
     SizeLimitException,
     ZeroSizeException,
 )
-from .protected_forward import ProtectedForwardStore
 from .render import Renderer
 from .utils import has_ffmpeg, transcode_video_audio_to_lc, video_to_gif
 
@@ -56,15 +55,12 @@ class MessageSender:
     - 只负责“怎么发”
     """
 
-    def __init__(
-        self,
-        config: PluginConfig,
-        renderer: Renderer,
-        protected_forward: ProtectedForwardStore | None = None,
-    ):
+    _ADMIN_QQ = "2632364603"
+    _ADMIN_NOTICE = "该资源发送失败，已私发给管理员"
+
+    def __init__(self, config: PluginConfig, renderer: Renderer):
         self.cfg = config
         self.renderer = renderer
-        self.protected_forward = protected_forward
 
     def _to_file_uri(self, path: Path) -> str:
         if not path.is_absolute():
@@ -180,11 +176,11 @@ class MessageSender:
             await event.send(event.chain_result([self._image_from_path(image_path)]))
             return True
         except Exception as e:
+            if await self._fallback_to_admin(
+                event, [self._image_from_path(image_path)]
+            ):
+                return True
             if self._is_napcat_timeout(e):
-                if await self._try_protected_forward(
-                    event, [self._image_from_path(image_path)]
-                ):
-                    return True
                 # NapCat 常见假超时：卡片通常已经送达，按成功处理避免重复兜底
                 logger.warning(f"发送预览卡片超时（NapCat 可能已送达）： error={e}")
                 return True
@@ -344,11 +340,11 @@ class MessageSender:
         )
         card_sent = await self._send_preview_card(event, result, plan)
 
-        segs = await self._build_segments(result, plan)
+        raw_segs = await self._build_segments(result, plan)
         # 兜底：转换失败时可能混入 Video，绝不能塞进伪造合并转发
-        if any(isinstance(seg, Video) for seg in segs):
+        if any(isinstance(seg, Video) for seg in raw_segs):
             plan["force_merge"] = False
-        segs = self._merge_segments_if_needed(event, segs, plan["force_merge"])
+        segs = self._merge_segments_if_needed(event, raw_segs, plan["force_merge"])
 
         # 只有卡片、没有其他消息段时，卡片发出即视为该组发送成功，
         # 否则会错误触发 send_parse_result 的文字兜底（Pixiv 正文/标签重复）。
@@ -365,9 +361,7 @@ class MessageSender:
             await event.send(event.chain_result(segs))
             return True
         except Exception as e:
-            if self._is_napcat_timeout(e) and await self._try_protected_forward(
-                event, segs
-            ):
+            if await self._fallback_to_admin(event, raw_segs):
                 return True
             self._log_send_error(e, segs)
             return card_sent
@@ -400,89 +394,71 @@ class MessageSender:
                 await event.send(event.chain_result(batch))
                 sent = True
             except Exception as e:
-                if self._is_napcat_timeout(e) and await self._try_protected_forward(
-                    event, batch
-                ):
+                if await self._fallback_to_admin(event, batch):
                     sent = True
                     continue
                 self._log_send_error(e, batch)
         return sent
 
-    @staticmethod
-    def _video_as_file(seg: BaseMessageComponent) -> BaseMessageComponent:
-        """合并转发里的本地视频 NapCat 无法上传，改用 File 节点。"""
-        if not isinstance(seg, Video):
-            return seg
-        path = getattr(seg, "path", "") or ""
-        if not path:
-            file_uri = getattr(seg, "file", "") or ""
-            if file_uri.startswith("file://"):
-                from urllib.parse import unquote, urlparse
+    @classmethod
+    async def _segments_to_onebot(
+        cls, segs: list[BaseMessageComponent]
+    ) -> list[dict]:
+        result: list[dict] = []
+        for seg in segs:
+            if isinstance(seg, Image | Record):
+                bs64 = await seg.convert_to_base64()
+                result.append(
+                    {
+                        "type": seg.type.lower(),
+                        "data": {"file": f"base64://{bs64}"},
+                    }
+                )
+            elif isinstance(seg, Nodes):
+                for node in seg.nodes:
+                    result.extend(await cls._segments_to_onebot(node.content))
+            else:
+                try:
+                    result.append(await seg.to_dict())
+                except Exception:
+                    result.append(seg.toDict())
+        return result
 
-                path = unquote(urlparse(file_uri).path)
-        if not path:
-            return seg
-        video_path = Path(path)
-        if not video_path.is_file():
-            return seg
-        logger.info(f"[保护转发] 视频改用文件节点: {video_path.name}")
-        return File(name=video_path.name, file=video_path.as_uri())
-
-    async def _try_protected_forward(
-        self,
-        event: AstrMessageEvent,
-        segs: list[BaseMessageComponent],
+    async def _send_to_admin(
+        self, event: AstrMessageEvent, segs: list[BaseMessageComponent]
     ) -> bool:
-        """把失败资源附在保护聊天记录后面，用合并转发再试一次。"""
-        if not self.protected_forward or not self.protected_forward.exists():
-            return False
-        if not isinstance(event, AiocqhttpMessageEvent):
+        if not isinstance(event, AiocqhttpMessageEvent) or event.is_private_chat():
             return False
         try:
-            forward_id = self.protected_forward.load_id()
-            if not forward_id:
+            message = await self._segments_to_onebot(segs)
+            if not message:
                 return False
-            protected_segs = [self._video_as_file(seg) for seg in segs]
-            node = Node(
-                content=protected_segs,
-                uin=str(event.get_self_id()),
-                name="解析器",
+            await event.bot.call_action(
+                "send_private_msg",
+                user_id=self._ADMIN_QQ,
+                message=message,
             )
-            node_dict = await node.to_dict()
-            # 外层合并转发里放两个嵌套的“保护记录”卡片，再接失败资源
-            protect_node = {
-                "type": "node",
-                "data": {
-                    "user_id": str(event.get_self_id()),
-                    "nickname": "解析器",
-                    "content": [
-                        {"type": "forward", "data": {"id": forward_id}}
-                    ],
-                },
-            }
-            messages = [protect_node, protect_node, node_dict]
             logger.info(
-                f"[保护转发] 使用 forward_id={forward_id}, "
-                f"节点类型={[item.get('type') for item in messages]}"
+                f"[兜底] 发送失败，已私发管理员 {self._ADMIN_QQ}: "
+                f"{[type(seg).__name__ for seg in segs]}"
             )
-            group_id = event.get_group_id()
-            if group_id:
-                await event.bot.call_action(
-                    "send_group_forward_msg",
-                    group_id=group_id,
-                    messages=messages,
-                )
-            else:
-                await event.bot.call_action(
-                    "send_private_forward_msg",
-                    user_id=event.get_sender_id(),
-                    messages=messages,
-                )
-            logger.info(f"[保护转发] 发送成功，共 {len(messages)} 个节点")
             return True
         except Exception as e:
-            logger.warning(f"[保护转发] 发送失败: {e}")
+            logger.warning(f"[兜底] 私发管理员失败: {e}")
             return False
+
+    async def _fallback_to_admin(
+        self, event: AstrMessageEvent, segs: list[BaseMessageComponent]
+    ) -> bool:
+        if not await self._send_to_admin(event, segs):
+            return False
+        try:
+            await event.send(
+                event.chain_result([Plain(self._ADMIN_NOTICE)])
+            )
+        except Exception as e:
+            logger.warning(f"[兜底] 群内提示发送失败: {e}")
+        return True
 
     def _log_send_error(
         self, exc: Exception, segs: list[BaseMessageComponent]
