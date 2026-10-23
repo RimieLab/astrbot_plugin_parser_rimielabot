@@ -413,6 +413,18 @@ class ParserPlugin(Star):
         yield event.plain_result("\n".join(lines))
 
     @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("补发", alias={"补发管理员"})
+    async def resend_last(self, event: AstrMessageEvent):
+        """把最近一次超时未确认的资源私发给管理员。"""
+        if not isinstance(event, AiocqhttpMessageEvent):
+            yield event.plain_result("仅支持 QQ/NapCat")
+            return
+        ok = await self.sender.resend_last_to_admin(event)
+        yield event.plain_result(
+            "已私发管理员" if ok else "没有待补发的资源，或私发失败"
+        )
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("测试兜底", alias={"testadmin"})
     async def test_admin_fallback(self, event: AstrMessageEvent):
         """发送一张测试图到管理员，验证私发兜底通道。"""

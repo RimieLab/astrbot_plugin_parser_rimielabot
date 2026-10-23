@@ -1,4 +1,3 @@
-from asyncio import to_thread
 from itertools import chain
 from pathlib import Path
 
@@ -39,9 +38,7 @@ from .exception import (
 )
 from .render import Renderer
 from .utils import (
-    encode_video_to_h264,
     has_ffmpeg,
-    reencode_image,
     transcode_video_audio_to_lc,
     video_to_gif,
 )
@@ -68,6 +65,7 @@ class MessageSender:
     def __init__(self, config: PluginConfig, renderer: Renderer):
         self.cfg = config
         self.renderer = renderer
+        self._last_failed_segs: list[BaseMessageComponent] | None = None
 
     def _to_file_uri(self, path: Path) -> str:
         if not path.is_absolute():
@@ -369,11 +367,10 @@ class MessageSender:
             return True
         except Exception as e:
             if self._is_napcat_timeout(e):
-                if any(isinstance(seg, Image | Video) for seg in raw_segs):
-                    return await self._retry_media_reencoded(event, raw_segs)
-                # 非视频 timeout 多为假阳性，消息通常稍后送达
+                self._last_failed_segs = list(raw_segs)
                 logger.warning(
-                    "[兜底] 发送超时，按可能已送达处理，不私发管理员"
+                    "[发送超时] 消息可能稍后送达，未自动重试；"
+                    "可用 /补发 手动私发管理员"
                 )
                 return True
             if await self._fallback_to_admin(event, raw_segs):
@@ -410,12 +407,10 @@ class MessageSender:
                 sent = True
             except Exception as e:
                 if self._is_napcat_timeout(e):
-                    if any(isinstance(seg, Image | Video) for seg in batch):
-                        if await self._retry_media_reencoded(event, batch):
-                            sent = True
-                        continue
+                    self._last_failed_segs = list(batch)
                     logger.warning(
-                        "[兜底] 发送超时，按可能已送达处理，不私发管理员"
+                        "[发送超时] 消息可能稍后送达，未自动重试；"
+                        "可用 /补发 手动私发管理员"
                     )
                     sent = True
                     continue
@@ -476,74 +471,14 @@ class MessageSender:
                     result.append(seg.toDict())
         return result
 
-    @staticmethod
-    def _media_path(seg: BaseMessageComponent) -> Path | None:
-        if not isinstance(seg, Image | Video):
-            return None
-        path = getattr(seg, "path", "") or ""
-        if not path:
-            file_uri = getattr(seg, "file", "") or ""
-            if file_uri.startswith("file://"):
-                from urllib.parse import unquote, urlparse
-
-                path = unquote(urlparse(file_uri).path)
-        if not path:
-            return None
-        media_path = Path(path)
-        return media_path if media_path.is_file() else None
-
-    async def _retry_media_reencoded(
-        self, event: AstrMessageEvent, segs: list[BaseMessageComponent]
+    async def resend_last_to_admin(
+        self, event: AstrMessageEvent, *, allow_private: bool = True
     ) -> bool:
-        """图片/视频超时后重新编码改变哈希，再发一次。"""
-        has_video = any(isinstance(seg, Video) for seg in segs)
-        if has_video and not has_ffmpeg():
-            if await self._fallback_to_admin(event, segs):
-                return True
-            await self._notify_fallback_failed(event)
+        if not self._last_failed_segs:
             return False
-
-        new_segs: list[BaseMessageComponent] = []
-        has_media = False
-        for seg in segs:
-            media_path = self._media_path(seg)
-            if media_path is None:
-                new_segs.append(seg)
-                continue
-            try:
-                if isinstance(seg, Video):
-                    new_path = await encode_video_to_h264(media_path)
-                    new_segs.append(Video.fromFileSystem(str(new_path)))
-                    has_media = True
-                elif isinstance(seg, Image):
-                    new_path = await to_thread(reencode_image, media_path)
-                    if new_path is not None:
-                        new_segs.append(Image.fromFileSystem(str(new_path)))
-                        has_media = True
-                    else:
-                        new_segs.append(seg)
-            except Exception as e:
-                logger.warning(f"[兜底] 媒体重新编码失败: {e}")
-                new_segs.append(seg)
-
-        if not has_media:
-            if await self._fallback_to_admin(event, segs):
-                return True
-            await self._notify_fallback_failed(event)
-            return False
-
-        try:
-            logger.info("[兜底] 媒体超时，重新编码后重试")
-            await event.send(event.chain_result(new_segs))
-            logger.info("[兜底] 重新编码的媒体发送成功")
-            return True
-        except Exception as e:
-            logger.warning(f"[兜底] 重新编码的媒体仍发送失败: {e}")
-
-        if await self._fallback_to_admin(event, new_segs):
-            return True
-        await self._notify_fallback_failed(event)
-        return False
+        return await self._send_to_admin(
+            event, self._last_failed_segs, allow_private=allow_private
+        )
 
     async def _send_to_admin(
         self,
