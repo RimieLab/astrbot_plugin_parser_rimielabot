@@ -284,14 +284,19 @@ async def encode_video_to_h264(video_path: Path) -> Path:
         "-c:v",
         "libx264",
         "-preset",
-        "medium",
+        "veryfast",
         "-crf",
         "23",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-movflags",
+        "+faststart",
         str(output_path),
     ]
     await exec_ffmpeg_cmd(cmd)
     logger.info(f"视频重新编码为 H.264 成功: {output_path}, {fmt_size(output_path)}")
-    await safe_unlink(video_path)
     return output_path
 
 

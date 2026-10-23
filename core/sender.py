@@ -37,7 +37,12 @@ from .exception import (
     ZeroSizeException,
 )
 from .render import Renderer
-from .utils import has_ffmpeg, transcode_video_audio_to_lc, video_to_gif
+from .utils import (
+    encode_video_to_h264,
+    has_ffmpeg,
+    transcode_video_audio_to_lc,
+    video_to_gif,
+)
 
 
 class MessageSender:
@@ -362,7 +367,9 @@ class MessageSender:
             return True
         except Exception as e:
             if self._is_napcat_timeout(e):
-                # timeout 只是客户端回执超时，消息经常稍后才到；不再自动兜底
+                if any(isinstance(seg, Video) for seg in raw_segs):
+                    return await self._retry_video_reencoded(event, raw_segs)
+                # 非视频 timeout 多为假阳性，消息通常稍后送达
                 logger.warning(
                     "[兜底] 发送超时，按可能已送达处理，不私发管理员"
                 )
@@ -401,6 +408,10 @@ class MessageSender:
                 sent = True
             except Exception as e:
                 if self._is_napcat_timeout(e):
+                    if any(isinstance(seg, Video) for seg in batch):
+                        if await self._retry_video_reencoded(event, batch):
+                            sent = True
+                        continue
                     logger.warning(
                         "[兜底] 发送超时，按可能已送达处理，不私发管理员"
                     )
@@ -462,6 +473,69 @@ class MessageSender:
                 except Exception:
                     result.append(seg.toDict())
         return result
+
+    @staticmethod
+    def _video_path(seg: BaseMessageComponent) -> Path | None:
+        if not isinstance(seg, Video):
+            return None
+        path = getattr(seg, "path", "") or ""
+        if not path:
+            file_uri = getattr(seg, "file", "") or ""
+            if file_uri.startswith("file://"):
+                from urllib.parse import unquote, urlparse
+
+                path = unquote(urlparse(file_uri).path)
+        if not path:
+            return None
+        video_path = Path(path)
+        return video_path if video_path.is_file() else None
+
+    async def _retry_video_reencoded(
+        self, event: AstrMessageEvent, segs: list[BaseMessageComponent]
+    ) -> bool:
+        """视频超时后重新编码改变哈希，再发一次。"""
+        if not has_ffmpeg():
+            if await self._fallback_to_admin(event, segs):
+                return True
+            await self._notify_fallback_failed(event)
+            return False
+
+        new_segs: list[BaseMessageComponent] = []
+        has_video = False
+        try:
+            for seg in segs:
+                video_path = self._video_path(seg)
+                if video_path is None:
+                    new_segs.append(seg)
+                    continue
+                new_path = await encode_video_to_h264(video_path)
+                new_segs.append(Video.fromFileSystem(str(new_path)))
+                has_video = True
+        except Exception as e:
+            logger.warning(f"[兜底] 视频重新编码失败: {e}")
+            if await self._fallback_to_admin(event, segs):
+                return True
+            await self._notify_fallback_failed(event)
+            return False
+
+        if not has_video:
+            if await self._fallback_to_admin(event, segs):
+                return True
+            await self._notify_fallback_failed(event)
+            return False
+
+        try:
+            logger.info("[兜底] 视频超时，重新编码后重试")
+            await event.send(event.chain_result(new_segs))
+            logger.info("[兜底] 重新编码的视频发送成功")
+            return True
+        except Exception as e:
+            logger.warning(f"[兜底] 重新编码的视频仍发送失败: {e}")
+
+        if await self._fallback_to_admin(event, new_segs):
+            return True
+        await self._notify_fallback_failed(event)
+        return False
 
     async def _send_to_admin(
         self,
