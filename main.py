@@ -333,6 +333,85 @@ class ParserPlugin(Star):
         else:
             yield event.plain_result("已输出当前消息链调试日志")
 
+    @staticmethod
+    def _writable(path: Path) -> bool:
+        try:
+            probe = path / ".selfcheck"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return True
+        except Exception:
+            return False
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("自检", alias={"selfcheck"})
+    async def self_check(self, event: AstrMessageEvent):
+        """输出插件运行状态，检查关键配置与通道。"""
+        lines = [f"[自检] 版本 {self._read_version()}"]
+        lines.append(
+            f"- ffmpeg: {'可用' if has_ffmpeg() else '不可用'}"
+        )
+        platforms = self.cfg.parser.enabled_platforms()
+        lines.append(f"- 启用平台: {'、'.join(platforms) if platforms else '无'}")
+        lines.append(
+            f"- 目录: data={'可写' if self._writable(self.cfg.data_dir) else '不可写'}, "
+            f"cache={'可写' if self._writable(self.cfg.cache_dir) else '不可写'}"
+        )
+        lines.append(
+            f"- 代理: {'已配置' if self.cfg.proxy else '未配置'}, "
+            f"下载超时={self.cfg.download_timeout}s, 重试={self.cfg.download_retry_times}"
+        )
+
+        parsers = set(self.parser_map.values())
+        yt = next(
+            (p for p in parsers if p.platform.name == "youtube"), None
+        )
+        if yt is not None:
+            if not yt.mycfg.cookies:
+                yt_status = "未配置"
+            elif yt.cookiejar.cookies and all(
+                cookie.is_expired() for cookie in yt.cookiejar.cookies
+            ):
+                yt_status = "已全部过期"
+            else:
+                yt_status = f"{len(yt.cookiejar.cookies)} 个，正常"
+            lines.append(f"- 油管 Cookies: {yt_status}")
+
+        for name, label in (("ncm", "网易云"), ("xiaoheihe", "小黑盒")):
+            parser = next(
+                (p for p in parsers if p.platform.name == name), None
+            )
+            if parser is not None:
+                lines.append(
+                    f"- {label} Cookies: "
+                    f"{'已配置' if parser.mycfg.cookies else '未配置'}"
+                )
+
+        if isinstance(event, AiocqhttpMessageEvent):
+            try:
+                await event.bot.call_action(
+                    "send_private_msg",
+                    user_id=self.sender.ADMIN_QQ,
+                    message=[
+                        {
+                            "type": "text",
+                            "data": {"text": "[自检] 私发通道正常"},
+                        }
+                    ],
+                )
+                admin_status = "正常"
+            except Exception as e:
+                if self.sender._is_napcat_timeout(e):
+                    admin_status = "超时（可能已送达）"
+                else:
+                    admin_status = f"失败: {str(e)[:80]}"
+        else:
+            admin_status = "未测试（非 QQ）"
+        lines.append(
+            f"- 管理员私发({self.sender.ADMIN_QQ}): {admin_status}"
+        )
+        yield event.plain_result("\n".join(lines))
+
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("开启解析")
     async def open_parser(self, event: AstrMessageEvent):

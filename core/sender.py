@@ -55,7 +55,7 @@ class MessageSender:
     - 只负责“怎么发”
     """
 
-    _ADMIN_QQ = "2632364603"
+    ADMIN_QQ = "2632364603"
     _ADMIN_NOTICE = "该资源发送失败，已私发给管理员"
 
     def __init__(self, config: PluginConfig, renderer: Renderer):
@@ -478,11 +478,11 @@ class MessageSender:
                     logger.info("[兜底] 视频私发失败，改为文件重试")
                 await event.bot.call_action(
                     "send_private_msg",
-                    user_id=self._ADMIN_QQ,
+                    user_id=self.ADMIN_QQ,
                     message=message,
                 )
                 logger.info(
-                    f"[兜底] 发送失败，已私发管理员 {self._ADMIN_QQ}: "
+                    f"[兜底] 发送失败，已私发管理员 {self.ADMIN_QQ}: "
                     f"{[type(seg).__name__ for seg in segs]}"
                 )
                 return True
