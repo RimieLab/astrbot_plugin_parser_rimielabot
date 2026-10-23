@@ -413,6 +413,26 @@ class ParserPlugin(Star):
         yield event.plain_result("\n".join(lines))
 
     @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("测试兜底", alias={"testadmin"})
+    async def test_admin_fallback(self, event: AstrMessageEvent):
+        """发送一张测试图到管理员，验证私发兜底通道。"""
+        if not isinstance(event, AiocqhttpMessageEvent):
+            yield event.plain_result("仅支持 QQ/NapCat")
+            return
+        logo = Path(__file__).with_name("logo.png")
+        if not logo.is_file():
+            yield event.plain_result("logo.png 不存在，无法测试")
+            return
+        ok = await self.sender._send_to_admin(
+            event,
+            [Image.fromFileSystem(str(logo))],
+            allow_private=True,
+        )
+        yield event.plain_result(
+            "测试图片已私发管理员" if ok else "测试私发失败，请查看日志"
+        )
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("开启解析")
     async def open_parser(self, event: AstrMessageEvent):
         """开启当前会话的解析"""

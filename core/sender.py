@@ -361,8 +361,11 @@ class MessageSender:
             await event.send(event.chain_result(segs))
             return True
         except Exception as e:
-            if self._is_napcat_timeout(e) and self._is_soft_media(raw_segs):
-                logger.warning("[兜底] 图片超时按已送达处理，不重复私发")
+            if self._is_napcat_timeout(e):
+                # timeout 只是客户端回执超时，消息经常稍后才到；不再自动兜底
+                logger.warning(
+                    "[兜底] 发送超时，按可能已送达处理，不私发管理员"
+                )
                 return True
             if await self._fallback_to_admin(event, raw_segs):
                 return True
@@ -397,8 +400,10 @@ class MessageSender:
                 await event.send(event.chain_result(batch))
                 sent = True
             except Exception as e:
-                if self._is_napcat_timeout(e) and self._is_soft_media(batch):
-                    logger.warning("[兜底] 图片超时按已送达处理，不重复私发")
+                if self._is_napcat_timeout(e):
+                    logger.warning(
+                        "[兜底] 发送超时，按可能已送达处理，不私发管理员"
+                    )
                     sent = True
                     continue
                 if await self._fallback_to_admin(event, batch):
@@ -459,9 +464,15 @@ class MessageSender:
         return result
 
     async def _send_to_admin(
-        self, event: AstrMessageEvent, segs: list[BaseMessageComponent]
+        self,
+        event: AstrMessageEvent,
+        segs: list[BaseMessageComponent],
+        *,
+        allow_private: bool = False,
     ) -> bool:
-        if not isinstance(event, AiocqhttpMessageEvent) or event.is_private_chat():
+        if not isinstance(event, AiocqhttpMessageEvent):
+            return False
+        if event.is_private_chat() and not allow_private:
             return False
 
         has_video = any(isinstance(seg, Video) for seg in segs)
@@ -497,18 +508,6 @@ class MessageSender:
         if last_error is not None:
             logger.warning(f"[兜底] 改为文件后仍失败: {last_error}")
         return False
-
-    @classmethod
-    def _is_soft_media(cls, segs: list[BaseMessageComponent]) -> bool:
-        """只包含图片/文字时，NapCat 超时通常是假阳性。"""
-        for seg in segs:
-            if isinstance(seg, Video | File):
-                return False
-            if isinstance(seg, Nodes) and not cls._is_soft_media(
-                [item for node in seg.nodes for item in node.content]
-            ):
-                return False
-        return True
 
     async def _notify_fallback_failed(self, event: AstrMessageEvent) -> None:
         try:
