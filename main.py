@@ -402,11 +402,23 @@ class ParserPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("保护记录状态")
     async def protected_record_status(self, event: AstrMessageEvent):
-        count = self.protected_forward.count()
-        if count:
-            yield event.plain_result(f"已保存保护记录，共 {count} 个节点")
-        else:
+        messages = self.protected_forward.load() or []
+        if not messages:
             yield event.plain_result("尚未保存保护记录")
+            return
+        for index, node in enumerate(messages):
+            data = node.get("data") if isinstance(node, dict) else None
+            content = data.get("content") if isinstance(data, dict) else None
+            if not isinstance(content, list):
+                content = []
+            types = [
+                item.get("type") if isinstance(item, dict) else type(item).__name__
+                for item in content
+            ]
+            logger.info(f"[保护记录] 节点 {index}: types={types}")
+            for item in content[:2]:
+                logger.info(f"[保护记录] 节点 {index} 内容: {str(item)[:300]}")
+        yield event.plain_result(f"已保存保护记录，共 {len(messages)} 个节点")
 
     @staticmethod
     def _describe_segment(seg: object) -> str:
