@@ -121,12 +121,12 @@ class TwitterParser(BaseParser):
 
     @staticmethod
     def _normalize_photo_url(url: str) -> str:
-        """推特原图可能是几十 MB，群聊上传容易超时；统一取 2048px 版本。"""
+        """推特图片统一取原图（name=orig）。"""
         if "pbs.twimg.com" not in url:
             return url
         parsed = urlparse(url)
         query = parse_qs(parsed.query)
-        query["name"] = ["large"]
+        query["name"] = ["orig"]
         return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
 
     @staticmethod
