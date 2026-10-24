@@ -113,8 +113,13 @@ class MessageSender:
         # 实际媒体段数量
         media_count = len(light) + len(heavy)
 
-        # 基础卡片渲染条件：单条媒体（图片/视频/音频/文件）或纯文字
-        render_card = media_count == 1 and self.cfg.single_heavy_render_card
+        # 卡片规则：开关只管单条媒体；多条媒体默认渲染卡片
+        if media_count == 1:
+            render_card = self.cfg.single_heavy_render_card
+        elif media_count > 1:
+            render_card = True
+        else:
+            render_card = False
         if render_card_override is not None:
             render_card = render_card_override
         elif media_count == 0 and (result.title or result.text):
