@@ -120,7 +120,7 @@ class MessageSender:
         media_count = len(light) + len(heavy)
 
         # 达到阈值后，强制合并转发，避免刷屏
-        force_merge = (media_count + (1 if render_card else 0)) >= self.cfg.forward_threshold
+        force_merge = media_count >= self.cfg.forward_threshold
         if force_merge_override is not None:
             force_merge = force_merge_override
 

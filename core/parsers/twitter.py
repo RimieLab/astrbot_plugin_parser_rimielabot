@@ -12,7 +12,7 @@ from astrbot.api import logger
 
 from ..config import PluginConfig
 from ..cookie import CookieJar
-from ..data import ParseResult, Platform
+from ..data import ParseResult, Platform, TextContent
 from ..download import Downloader
 from ..exception import ParseException, TipException
 from .base import BaseParser, handle
@@ -224,9 +224,6 @@ class TwitterParser(BaseParser):
                 self.create_image_contents(photo_urls, headers=self.media_headers)
             )
 
-        if not contents:
-            raise ParseException("未找到可下载的媒体")
-
         author_data = tweet.get("author") or {}
         author_name = "无用户名"
         avatar_url = None
@@ -243,6 +240,11 @@ class TwitterParser(BaseParser):
         timestamp = tweet.get("created_timestamp")
         timestamp_value = timestamp if isinstance(timestamp, int) else None
         url = tweet.get("url") if isinstance(tweet.get("url"), str) else fallback_url
+
+        if not contents:
+            if title is None:
+                raise ParseException("未找到可下载的媒体")
+            contents.append(TextContent(title))
 
         return self.result(
             title=title,
@@ -302,7 +304,10 @@ class TwitterParser(BaseParser):
             try:
                 tweet = await self._req_fxtwitter(tweet_id)
                 probe_url = self._probe_media_url(tweet)
-                if probe_url and await self._direct_media_available(probe_url):
+                if probe_url is None:
+                    # 纯文字推文，没有媒体可探测
+                    return self._build_fx_result(tweet, url)
+                if await self._direct_media_available(probe_url):
                     return self._build_fx_result(tweet, url)
                 logger.info("Twitter 直链不可用，使用 xdown 解析")
             except (ClientError, TimeoutError, ParseException, ValueError) as exc:
