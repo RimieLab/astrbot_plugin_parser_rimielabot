@@ -12,7 +12,7 @@ from astrbot.api import logger
 
 from ..config import PluginConfig
 from ..cookie import CookieJar
-from ..data import ParseResult, Platform, TextContent
+from ..data import ParseResult, Platform
 from ..download import Downloader
 from ..exception import ParseException, TipException
 from .base import BaseParser, handle
@@ -241,10 +241,8 @@ class TwitterParser(BaseParser):
         timestamp_value = timestamp if isinstance(timestamp, int) else None
         url = tweet.get("url") if isinstance(tweet.get("url"), str) else fallback_url
 
-        if not contents:
-            if title is None:
-                raise ParseException("未找到可下载的媒体")
-            contents.append(TextContent(title))
+        if not contents and title is None:
+            raise ParseException("未找到可下载的媒体")
 
         return self.result(
             title=title,

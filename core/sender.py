@@ -115,6 +115,9 @@ class MessageSender:
         render_card = is_single_heavy and self.cfg.single_heavy_render_card
         if render_card_override is not None:
             render_card = render_card_override
+        elif not light and not heavy and (result.title or result.text):
+            # 纯文字内容也渲染一张预览卡片
+            render_card = True
 
         # 实际媒体段数量
         media_count = len(light) + len(heavy)
