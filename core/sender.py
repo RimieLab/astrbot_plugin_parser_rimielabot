@@ -110,17 +110,16 @@ class MessageSender:
                 case _:
                     light.append(cont)
 
-        # 基础卡片渲染条件：单条重媒体配置或显式指定
-        is_single_heavy = len(heavy) == 1 and not light
-        render_card = is_single_heavy and self.cfg.single_heavy_render_card
-        if render_card_override is not None:
-            render_card = render_card_override
-        elif not light and not heavy and (result.title or result.text):
-            # 纯文字内容也渲染一张预览卡片
-            render_card = True
-
         # 实际媒体段数量
         media_count = len(light) + len(heavy)
+
+        # 基础卡片渲染条件：单条媒体（图片/视频/音频/文件）或纯文字
+        render_card = media_count == 1 and self.cfg.single_heavy_render_card
+        if render_card_override is not None:
+            render_card = render_card_override
+        elif media_count == 0 and (result.title or result.text):
+            # 纯文字内容渲染预览卡片
+            render_card = True
 
         # 达到阈值后，强制合并转发，避免刷屏
         force_merge = media_count >= self.cfg.forward_threshold
