@@ -229,6 +229,8 @@ class PluginConfig(ConfigNode):
 
     audio_to_file: bool
     single_heavy_render_card: bool
+    admin_fallback_enabled: bool
+    use_direct_send_api: bool
     forward_threshold: int
 
     show_download_fail_tip: bool

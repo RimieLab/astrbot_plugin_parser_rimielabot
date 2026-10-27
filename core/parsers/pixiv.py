@@ -10,6 +10,8 @@ from typing import Any, ClassVar
 import httpx
 from PIL import Image, ImageFilter
 
+from astrbot.api import logger
+
 from ..config import PluginConfig
 from ..constants import COMMON_HEADER
 from ..cookie import CookieJar
@@ -24,6 +26,7 @@ from ..data import (
 )
 from ..download import Downloader
 from ..exception import ParseException
+from ..utils import release_memory
 from .base import BaseParser, handle
 
 PIXIV_BASE = "https://www.pixiv.net"
@@ -226,19 +229,45 @@ class PixivHelper:
     # ---- 文件构建 ----
 
     @staticmethod
-    def imgs_to_pdf(img_paths: list[Path], save_path: Path) -> Path:
+    def _prepare_pdf_image(img: Image.Image) -> Image.Image:
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        # 单页最大 2400px，既控制单张解码内存，也避免 PDF 过大
+        img.thumbnail((2400, 2400), Image.Resampling.LANCZOS)
+        return img
+
+    @classmethod
+    def imgs_to_pdf(cls, img_paths: list[Path], save_path: Path) -> Path:
+        """逐页写入 PDF，避免一次性把所有图片解到内存。"""
         if not img_paths:
             raise ParseException("图片列表为空")
-        images: list[Image.Image] = []
+
+        first = True
         for img_path in img_paths:
             with Image.open(img_path) as img:
-                images.append(img.convert("RGB"))
-        images[0].save(
-            save_path,
-            "PDF",
-            save_all=True,
-            append_images=images[1:],
+                page = cls._prepare_pdf_image(img)
+                if first:
+                    page.save(
+                        save_path,
+                        "PDF",
+                        resolution=150,
+                        quality=90,
+                    )
+                    first = False
+                else:
+                    with open(save_path, "r+b") as fp:
+                        page.save(
+                            fp,
+                            "PDF",
+                            append=True,
+                            resolution=150,
+                            quality=90,
+                        )
+        logger.info(
+            f"[Pixiv] PDF 完成 {save_path.name} "
+            f"({save_path.stat().st_size} bytes, {len(img_paths)} 页)"
         )
+        release_memory()
         return save_path
 
     @staticmethod
@@ -269,12 +298,12 @@ class PixivHelper:
             loop=0,
         )
 
-    @staticmethod
+    @classmethod
     def build_pdf_from_zip_sync(
-        zip_path: Path, frames: list[dict[str, Any]], pdf_path: Path
+        cls, zip_path: Path, frames: list[dict[str, Any]], pdf_path: Path
     ) -> Path:
-        """从动图 zip 中提取帧并合成为 PDF"""
-        images: list[Image.Image] = []
+        """从动图 zip 中逐帧写入 PDF，避免一次性加载所有帧。"""
+        first = True
         with zipfile.ZipFile(zip_path) as zf:
             for frame in frames:
                 file_name = frame.get("file", "")
@@ -283,15 +312,31 @@ class PixivHelper:
                 with zf.open(file_name) as f:
                     img = Image.open(f)
                     img.load()
-                    images.append(img.convert("RGB"))
-        if not images:
+                    page = cls._prepare_pdf_image(img)
+                    if first:
+                        page.save(
+                            pdf_path,
+                            "PDF",
+                            resolution=150,
+                            quality=90,
+                        )
+                        first = False
+                    else:
+                        with open(pdf_path, "r+b") as fp:
+                            page.save(
+                                fp,
+                                "PDF",
+                                append=True,
+                                resolution=150,
+                                quality=90,
+                            )
+        if first:
             raise ParseException("动图帧提取失败")
-        images[0].save(
-            pdf_path,
-            "PDF",
-            save_all=True,
-            append_images=images[1:],
+        logger.info(
+            f"[Pixiv] 动图 PDF 完成 {pdf_path.name} "
+            f"({pdf_path.stat().st_size} bytes)"
         )
+        release_memory()
         return pdf_path
 
 
@@ -303,6 +348,7 @@ class PixivParser(BaseParser):
         super().__init__(config, downloader)
         self.mycfg = config.parser.pixiv
         self.cookiejar = CookieJar(config, self.mycfg, domain="pixiv.net")
+        self._pdf_lock = asyncio.Lock()
         self.api = PixivAPI(
             cookiejar=self.cookiejar,
             proxy=self.proxy,
@@ -321,7 +367,8 @@ class PixivParser(BaseParser):
         if not paths:
             raise ParseException("漫画图片下载失败")
         pdf_path = self.cfg.cache_dir / f"pixiv_{pid}.pdf"
-        await asyncio.to_thread(PixivHelper.imgs_to_pdf, paths, pdf_path)
+        async with self._pdf_lock:
+            await asyncio.to_thread(PixivHelper.imgs_to_pdf, paths, pdf_path)
         return pdf_path
 
     async def _build_gif(self, pid: str, meta_body: dict[str, Any]) -> Path:
@@ -362,9 +409,10 @@ class PixivParser(BaseParser):
             proxy=self.proxy,
         )
         pdf_path = self.cfg.cache_dir / f"pixiv_{pid}.pdf"
-        await asyncio.to_thread(
-            PixivHelper.build_pdf_from_zip_sync, zip_path, frames, pdf_path
-        )
+        async with self._pdf_lock:
+            await asyncio.to_thread(
+                PixivHelper.build_pdf_from_zip_sync, zip_path, frames, pdf_path
+            )
         return pdf_path
 
     def _nsfw_action(self, x_restrict: int) -> str | None:

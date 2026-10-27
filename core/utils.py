@@ -1,8 +1,11 @@
 import asyncio
+import ctypes
+import gc
 import hashlib
 import json
 import re
 import shutil
+import sys
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, TypeVar
@@ -12,6 +15,20 @@ from astrbot.api import logger
 
 K = TypeVar("K")
 V = TypeVar("V")
+
+_FFMPEG_LOCK: asyncio.Semaphore | None = None
+_FFMPEG_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def _ffmpeg_lock() -> asyncio.Semaphore:
+    """串行化 ffmpeg，避免多条解析同时启动导致 CPU/内存尖峰。"""
+    global _FFMPEG_LOCK, _FFMPEG_LOCK_LOOP
+    loop = asyncio.get_running_loop()
+    if _FFMPEG_LOCK is None or _FFMPEG_LOCK_LOOP is not loop:
+        _FFMPEG_LOCK = asyncio.Semaphore(1)
+        _FFMPEG_LOCK_LOOP = loop
+    return _FFMPEG_LOCK
+
 
 class LimitedSizeDict(OrderedDict[K, V]):
     """
@@ -39,43 +56,59 @@ async def safe_unlink(path: Path):
 
 
 async def exec_ffmpeg_cmd(cmd: list[str]) -> None:
-    """执行 ffmpeg 命令，并确保子进程被回收。"""
-    process = None
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            _, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=300
-            )
-        except asyncio.TimeoutError:
-            process.kill()
-            await process.wait()
-            raise RuntimeError("ffmpeg 执行超时（300 秒）")
-    except FileNotFoundError:
-        raise RuntimeError("ffmpeg 未安装或无法找到可执行文件")
-    except asyncio.CancelledError:
-        if process is not None and process.returncode is None:
-            process.kill()
-            await process.wait()
-        raise
-    finally:
-        if process is not None and process.returncode is None:
-            process.kill()
-            await process.wait()
+    """执行 ffmpeg 命令，串行化并确保子进程被回收。
 
-    if process.returncode != 0:
-        error_msg = (stderr or b"").decode(errors="ignore").strip()
-        raise RuntimeError(f"ffmpeg 执行失败: {error_msg}")
+    Args:
+        cmd (list[str]): 命令序列
+    """
+    process = None
+    async with _ffmpeg_lock():
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                _, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=300
+                )
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+                raise RuntimeError("ffmpeg 执行超时（300 秒）")
+        except FileNotFoundError:
+            raise RuntimeError("ffmpeg 未安装或无法找到可执行文件")
+        except asyncio.CancelledError:
+            if process is not None and process.returncode is None:
+                process.kill()
+                await process.wait()
+            raise
+        finally:
+            if process is not None and process.returncode is None:
+                process.kill()
+                await process.wait()
+
+        if process.returncode != 0:
+            error_msg = (stderr or b"").decode(errors="ignore").strip()
+            raise RuntimeError(f"ffmpeg 执行失败: {error_msg}")
+    await asyncio.to_thread(release_memory)
 
 
 def has_ffmpeg() -> bool:
     """当前运行环境是否能找到 ffmpeg。"""
     return shutil.which("ffmpeg") is not None
+
+
+def release_memory() -> None:
+    """回收 Python 侧不再使用的内存（glibc 环境额外 malloc_trim）。"""
+    gc.collect()
+    if sys.platform.startswith("linux"):
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception:
+            pass
 
 
 async def video_to_gif(
@@ -94,13 +127,19 @@ async def video_to_gif(
         return None
 
     logger.info(f"[GIF] 开始转换 {video_path.name} -> {gif_path.name}")
-    # 单次解码完成取色板和编码
+    # 单次解码完成取色板和编码；限制线程数，避免瞬时打满 CPU。
     cmd = [
         "ffmpeg",
         "-y",
         "-nostdin",
         "-loglevel",
         "error",
+        "-threads",
+        "1",
+        "-filter_threads",
+        "1",
+        "-filter_complex_threads",
+        "1",
         "-i",
         str(video_path),
         "-filter_complex",
@@ -194,6 +233,8 @@ async def merge_av_h264(
         "ffmpeg",
         "-y",
         "-nostdin",
+        "-threads",
+        "2",
         "-i",
         str(v_path),
         "-i",
@@ -236,6 +277,8 @@ async def encode_video_to_h264(video_path: Path) -> Path:
         "ffmpeg",
         "-y",
         "-nostdin",
+        "-threads",
+        "2",
         "-i",
         str(video_path),
         "-c:v",
@@ -285,48 +328,52 @@ async def transcode_video_audio_to_lc(path: Path) -> Path:
     out_path = path.with_name(f"{path.stem}_lc.mp4")
     proc = None
     err: bytes = b""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg",
-            "-y",
-            "-nostdin",
-            "-loglevel",
-            "error",
-            "-i",
-            str(path),
-            "-c:v",
-            "copy",
-            "-c:a",
-            "aac",
-            "-profile:a",
-            "aac_low",
-            "-movflags",
-            "+faststart",
-            str(out_path),
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
+    async with _ffmpeg_lock():
         try:
-            _, err = await asyncio.wait_for(proc.communicate(), timeout=300)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            logger.warning("[视频] ffmpeg 转码超时，改用原文件")
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg",
+                "-y",
+                "-nostdin",
+                "-threads",
+                "2",
+                "-loglevel",
+                "error",
+                "-i",
+                str(path),
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-profile:a",
+                "aac_low",
+                "-movflags",
+                "+faststart",
+                str(out_path),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                _, err = await asyncio.wait_for(proc.communicate(), timeout=300)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                logger.warning("[视频] ffmpeg 转码超时，改用原文件")
+                return path
+        except asyncio.CancelledError:
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+            raise
+        except Exception as e:
+            logger.warning(f"[视频] ffmpeg 调用异常，跳过转码: {e}")
             return path
-    except asyncio.CancelledError:
-        if proc is not None and proc.returncode is None:
-            proc.kill()
-            await proc.wait()
-        raise
-    except Exception as e:
-        logger.warning(f"[视频] ffmpeg 调用异常，跳过转码: {e}")
-        return path
-    finally:
-        if proc is not None and proc.returncode is None:
-            proc.kill()
-            await proc.wait()
+        finally:
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
 
+    await asyncio.to_thread(release_memory)
     if proc.returncode != 0 or not out_path.exists():
         logger.warning(
             f"[视频] 音频转码失败(profile={profile})，改用原文件: "

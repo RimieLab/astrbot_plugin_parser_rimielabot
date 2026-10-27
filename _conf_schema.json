@@ -69,8 +69,20 @@
         "default": true
     },
     "single_heavy_render_card": {
-        "description": "单条重媒体仍渲染卡片",
-        "hint": "重媒体是指：视频、音频、文件。重媒体下载和发送较为耗时，有需者可以打开此开关让插件先渲染一个信息卡片发出来，追求简洁者请不要开启",
+        "description": "单条媒体仍渲染卡片",
+        "hint": "仅控制单条媒体（图片/视频/音频/文件）：开启后先发预览卡片再发媒体；多条媒体始终渲染卡片，不受此开关影响",
+        "type": "bool",
+        "default": false
+    },
+    "admin_fallback_enabled": {
+        "description": "发送失败时私发管理员",
+        "hint": "开启后，群聊图片/视频发送失败会自动把资源私发给管理员。网络较差时 NapCat 超时可能是延迟送达，开启前请确认是否接受重复发送风险",
+        "type": "bool",
+        "default": false
+    },
+    "use_direct_send_api": {
+        "description": "测试：直连 OneBot 发送接口",
+        "hint": "测试开关。开启后绕过 AstrBot 的图片 base64 转换，直接用 OneBot send_group_msg/send_private_msg 发送本地文件路径。需要 NapCat 与 AstrBot 在同一文件系统，否则会发送失败",
         "type": "bool",
         "default": false
     },

@@ -180,7 +180,7 @@ class MessageSender:
 
         try:
             logger.info("[发送] 预览卡片")
-            await event.send(event.chain_result([self._image_from_path(image_path)]))
+            await self._send_batch(event, [self._image_from_path(image_path)])
             return True
         except Exception as e:
             if self._is_napcat_timeout(e):
@@ -365,7 +365,7 @@ class MessageSender:
 
         try:
             logger.info(f"[发送] 消息段: {[type(seg).__name__ for seg in segs]}")
-            await event.send(event.chain_result(segs))
+            await self._send_batch(event, segs)
             return True
         except Exception as e:
             if await self._fallback_to_admin(event, raw_segs):
@@ -398,7 +398,7 @@ class MessageSender:
                     f"[发送] 第 {index + 1}/{len(batches)} 条: "
                     f"{[type(seg).__name__ for seg in batch]}"
                 )
-                await event.send(event.chain_result(batch))
+                await self._send_batch(event, batch)
                 sent = True
             except Exception as e:
                 if await self._fallback_to_admin(event, batch):
@@ -406,6 +406,73 @@ class MessageSender:
                     continue
                 self._log_send_error(e, batch)
         return sent
+
+    @classmethod
+    async def _segments_to_onebot_path(
+        cls, segs: list[BaseMessageComponent]
+    ) -> list[dict] | None:
+        result: list[dict] = []
+        for seg in segs:
+            if isinstance(seg, Image | Record):
+                path = getattr(seg, "path", "") or ""
+                if not path:
+                    file = getattr(seg, "file", "") or ""
+                    if file.startswith("file://"):
+                        from urllib.parse import unquote, urlparse
+
+                        path = unquote(urlparse(file).path)
+                if not path:
+                    return None
+                result.append(
+                    {"type": seg.type.lower(), "data": {"file": path}}
+                )
+            elif isinstance(seg, Node | Nodes):
+                return None
+            else:
+                result.append(await seg.to_dict())
+        return result
+
+    async def _send_direct(
+        self, event: AstrMessageEvent, segs: list[BaseMessageComponent]
+    ) -> bool:
+        if not isinstance(event, AiocqhttpMessageEvent):
+            return False
+        message = await self._segments_to_onebot_path(segs)
+        if not message:
+            return False
+        routing = {}
+        self_id = event.get_self_id()
+        if self_id:
+            routing["self_id"] = self_id
+        group_id = event.get_group_id()
+        if group_id:
+            await event.bot.call_action(
+                "send_group_msg",
+                group_id=int(group_id),
+                message=message,
+                **routing,
+            )
+        else:
+            await event.bot.call_action(
+                "send_private_msg",
+                user_id=int(event.get_sender_id()),
+                message=message,
+                **routing,
+            )
+        return True
+
+    async def _send_batch(
+        self, event: AstrMessageEvent, segs: list[BaseMessageComponent]
+    ) -> None:
+        if (
+            getattr(self.cfg, "use_direct_send_api", False)
+            and isinstance(event, AiocqhttpMessageEvent)
+            and not any(isinstance(seg, Node | Nodes) for seg in segs)
+        ):
+            logger.info("[发送] 使用直连 OneBot 接口")
+            if await self._send_direct(event, segs):
+                return
+        await event.send(event.chain_result(segs))
 
     @classmethod
     async def _segments_to_onebot(
@@ -434,6 +501,8 @@ class MessageSender:
     async def _send_to_admin(
         self, event: AstrMessageEvent, segs: list[BaseMessageComponent]
     ) -> bool:
+        if not getattr(self.cfg, "admin_fallback_enabled", False):
+            return False
         if not isinstance(event, AiocqhttpMessageEvent) or event.is_private_chat():
             return False
         try:
@@ -457,6 +526,8 @@ class MessageSender:
     async def _fallback_to_admin(
         self, event: AstrMessageEvent, segs: list[BaseMessageComponent]
     ) -> bool:
+        if not getattr(self.cfg, "admin_fallback_enabled", False):
+            return False
         if not await self._send_to_admin(event, segs):
             return False
         try:
