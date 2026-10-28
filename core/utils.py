@@ -389,6 +389,220 @@ async def transcode_video_audio_to_lc(path: Path) -> Path:
     return out_path
 
 
+VIDEO_CODECS: dict[str, tuple[str, str, list[str]]] = {
+    "h264": (
+        "libx264",
+        ".mp4",
+        [
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-profile:v",
+            "high",
+            "-pix_fmt",
+            "yuv420p",
+        ],
+    ),
+    "h265": (
+        "libx265",
+        ".mp4",
+        ["-c:v", "libx265", "-preset", "fast", "-tag:v", "hvc1"],
+    ),
+    "av1": (
+        "libsvtav1",
+        ".mp4",
+        ["-c:v", "libsvtav1", "-preset", "8"],
+    ),
+}
+
+
+def video_codec_available(codec: str) -> bool:
+    """ffmpeg 是否自带该编码器。"""
+    info = VIDEO_CODECS.get(codec)
+    if info is None:
+        return False
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return info[0] in (out.stdout or "")
+    except Exception:
+        return False
+
+
+async def probe_video_info(path: Path) -> tuple[float, int, int]:
+    """返回 (时长秒, 宽, 高)；探测失败时返回 (0, 0, 0)。"""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height:format=duration",
+            "-of",
+            "default=nw=1",
+            str(path),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await proc.communicate()
+    except Exception as e:
+        logger.warning(f"[压缩] ffprobe 探测失败: {e}")
+        return 0.0, 0, 0
+    duration = 0.0
+    width = 0
+    height = 0
+    for line in (out or b"").decode(errors="ignore").splitlines():
+        key, _, value = line.partition("=")
+        value = value.strip()
+        if not value:
+            continue
+        if key == "duration":
+            try:
+                duration = float(value)
+            except ValueError:
+                pass
+        elif key == "width":
+            try:
+                width = int(value)
+            except ValueError:
+                pass
+        elif key == "height":
+            try:
+                height = int(value)
+            except ValueError:
+                pass
+    return duration, width, height
+
+
+async def compress_video(
+    video_path: Path,
+    *,
+    threshold_mb: float = 10,
+    max_height: int = 1080,
+    target_mb: float = 10,
+    codec: str = "h265",
+    audio_bitrate: str = "96k",
+) -> Path:
+    """把超过阈值的视频压到目标体积以内，优先降码率，分辨率仅封顶。
+
+    压缩失败或压缩后反而更大时返回原文件。
+    """
+    try:
+        size = video_path.stat().st_size
+    except OSError:
+        return video_path
+    if size <= threshold_mb * 1024 * 1024:
+        return video_path
+    if not has_ffmpeg():
+        logger.warning("[压缩] 未找到 ffmpeg，跳过视频压缩")
+        return video_path
+
+    codec = (codec or "h265").lower()
+    if codec not in VIDEO_CODECS:
+        logger.warning(f"[压缩] 未知编码 {codec}，改用 h265")
+        codec = "h265"
+    if not video_codec_available(codec):
+        for fallback in ("h265", "h264"):
+            if video_codec_available(fallback):
+                logger.warning(
+                    f"[压缩] ffmpeg 不支持 {codec}，改用 {fallback}"
+                )
+                codec = fallback
+                break
+        else:
+            logger.warning("[压缩] ffmpeg 无可用编码器，跳过压缩")
+            return video_path
+
+    duration, width, height = await probe_video_info(video_path)
+    if duration <= 0:
+        logger.warning("[压缩] 无法获取视频时长，跳过压缩")
+        return video_path
+
+    target_bytes = max(int(target_mb * 1024 * 1024), 512 * 1024)
+    audio_kbps = 96
+    total_kbps = target_bytes * 8 / duration / 1000
+    video_kbps = int(total_kbps - audio_kbps)
+    if video_kbps < 150:
+        # 码率太低画质崩坏，改为降低分辨率后重算
+        height = min(height or max_height, 720)
+        video_kbps = int(max(total_kbps * 0.85, 150))
+    video_kbps = min(video_kbps, 20000)
+    max_height = max(min(max_height, height or max_height), 240)
+    if height and height > max_height:
+        height = max_height
+
+    _, ext, codec_args = VIDEO_CODECS[codec]
+    # 等比缩放到目标高度（不放大），并保证宽高为偶数
+    vf = (
+        f"scale=-2:'min({height},ih)'"
+        if height
+        else "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    )
+    output = video_path.with_name(
+        f"{video_path.stem}_c{codec}{ext}"
+    )
+    if output.exists() and output.stat().st_size > 0:
+        return output
+
+    logger.info(
+        f"[压缩] {video_path.name} {size / 1024 / 1024:.2f}MB -> "
+        f"{codec} {video_kbps}kbps {height}p"
+    )
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-i",
+        str(video_path),
+        "-vf",
+        vf,
+        *codec_args,
+        "-b:v",
+        f"{video_kbps}k",
+        "-maxrate",
+        f"{int(video_kbps * 1.2)}k",
+        "-bufsize",
+        f"{video_kbps * 2}k",
+        "-c:a",
+        "aac",
+        "-b:a",
+        audio_bitrate,
+        "-movflags",
+        "+faststart",
+        str(output),
+    ]
+    try:
+        await exec_ffmpeg_cmd(cmd)
+    except Exception as e:
+        logger.warning(f"[压缩] 失败，改用原视频: {e}")
+        await safe_unlink(output)
+        return video_path
+
+    if not output.exists() or output.stat().st_size <= 0:
+        return video_path
+    if output.stat().st_size >= size:
+        logger.info("[压缩] 压缩后未变小，改用原视频")
+        await safe_unlink(output)
+        return video_path
+    logger.info(
+        f"[压缩] 完成 {output.name}: "
+        f"{output.stat().st_size / 1024 / 1024:.2f}MB"
+    )
+    return output
+
+
 def fmt_size(file_path: Path) -> str:
     """格式化文件大小
 

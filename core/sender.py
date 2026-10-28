@@ -37,7 +37,12 @@ from .exception import (
     ZeroSizeException,
 )
 from .render import Renderer
-from .utils import has_ffmpeg, transcode_video_audio_to_lc, video_to_gif
+from .utils import (
+    compress_video,
+    has_ffmpeg,
+    transcode_video_audio_to_lc,
+    video_to_gif,
+)
 
 
 class MessageSender:
@@ -261,6 +266,7 @@ class MessageSender:
             match cont:
                 case VideoContent():
                     path = await transcode_video_audio_to_lc(path)
+                    path = await self._maybe_compress_video(path)
                     segs.append(self._video_from_path(path))
                 case DynamicContent() as dynamic:
                     gif_path = dynamic.gif_path
@@ -284,6 +290,26 @@ class MessageSender:
                     segs.append(File(name=path.name, file=self._to_file_uri(path)))
 
         return segs
+
+    async def _maybe_compress_video(self, path: Path) -> Path:
+        """超过阈值的视频按配置压缩，优先降码率。"""
+        if not getattr(self.cfg, "video_compress_enabled", False):
+            return path
+        try:
+            return await compress_video(
+                path,
+                threshold_mb=float(
+                    getattr(self.cfg, "video_compress_threshold_mb", 10)
+                ),
+                max_height=int(getattr(self.cfg, "video_compress_max_height", 1080)),
+                target_mb=float(
+                    getattr(self.cfg, "video_compress_target_mb", 10)
+                ),
+                codec=str(getattr(self.cfg, "video_compress_codec", "h265")),
+            )
+        except Exception as e:
+            logger.warning(f"[压缩] 视频压缩异常，改用原视频: {e}")
+            return path
 
     def _merge_segments_if_needed(
         self,

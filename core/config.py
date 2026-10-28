@@ -229,6 +229,11 @@ class PluginConfig(ConfigNode):
 
     audio_to_file: bool
     single_heavy_render_card: bool
+    video_compress_enabled: bool
+    video_compress_threshold_mb: int
+    video_compress_target_mb: int
+    video_compress_max_height: int
+    video_compress_codec: str
     admin_fallback_enabled: bool
     use_direct_send_api: bool
     forward_threshold: int

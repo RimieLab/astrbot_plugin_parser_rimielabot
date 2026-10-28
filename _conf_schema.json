@@ -74,6 +74,52 @@
         "type": "bool",
         "default": false
     },
+    "video_compress_enabled": {
+        "description": "发送前压缩大视频",
+        "hint": "开启后，超过阈值的视频会在发送前重新编码压缩，优先降低码率，减小跨境上传耗时",
+        "type": "bool",
+        "default": false
+    },
+    "video_compress_threshold_mb": {
+        "description": "压缩阈值（MB）",
+        "hint": "文件超过此大小时才压缩，小于此值原样发送",
+        "type": "int",
+        "slider": {
+            "min": 1,
+            "max": 200,
+            "step": 1
+        },
+        "default": 10
+    },
+    "video_compress_target_mb": {
+        "description": "压缩目标体积（MB）",
+        "hint": "按此体积反推视频码率，实际大小受视频内容影响可能略高",
+        "type": "int",
+        "slider": {
+            "min": 1,
+            "max": 100,
+            "step": 1
+        },
+        "default": 10
+    },
+    "video_compress_max_height": {
+        "description": "压缩最大高度",
+        "hint": "分辨率只做上限限制，优先靠降码率减小体积，不会放大低分辨率视频",
+        "type": "int",
+        "slider": {
+            "min": 360,
+            "max": 1080,
+            "step": 120
+        },
+        "default": 1080
+    },
+    "video_compress_codec": {
+        "description": "压缩编码",
+        "hint": "h265 体积小但部分客户端不兼容；av1 更小但兼容性更差；h264 兼容性最好、体积最大。ffmpeg 不支持时会自动回退",
+        "type": "string",
+        "options": ["h265", "h264", "av1"],
+        "default": "h265"
+    },
     "admin_fallback_enabled": {
         "description": "发送失败时私发管理员",
         "hint": "开启后，群聊图片/视频发送失败会自动把资源私发给管理员。网络较差时 NapCat 超时可能是延迟送达，开启前请确认是否接受重复发送风险",
