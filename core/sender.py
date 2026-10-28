@@ -294,6 +294,7 @@ class MessageSender:
     async def _maybe_compress_video(self, path: Path) -> Path:
         """超过阈值的视频按配置压缩，优先降码率。"""
         if not getattr(self.cfg, "video_compress_enabled", False):
+            logger.info(f"[压缩] 未开启压缩开关，原样发送 {path.name}")
             return path
         try:
             return await compress_video(

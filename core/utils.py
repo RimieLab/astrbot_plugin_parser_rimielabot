@@ -502,6 +502,10 @@ async def compress_video(
     except OSError:
         return video_path
     if size <= threshold_mb * 1024 * 1024:
+        logger.info(
+            f"[压缩] {video_path.name} {size / 1024 / 1024:.2f}MB "
+            f"未超过 {threshold_mb:g}MB，不压缩"
+        )
         return video_path
     if not has_ffmpeg():
         logger.warning("[压缩] 未找到 ffmpeg，跳过视频压缩")
