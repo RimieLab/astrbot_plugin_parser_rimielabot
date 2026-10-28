@@ -484,6 +484,127 @@ async def probe_video_info(path: Path) -> tuple[float, int, int]:
     return duration, width, height
 
 
+async def probe_video_codec(path: Path) -> dict[str, str]:
+    """探测视频与音频编码信息，用于日志定位 QQ 拒收原因。"""
+    info: dict[str, str] = {}
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_type,codec_name,profile,pix_fmt,width,height:"
+            "format=format_name",
+            "-of",
+            "default=nw=1",
+            str(path),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await proc.communicate()
+    except Exception as e:
+        logger.warning(f"[视频] ffprobe 编码探测失败: {e}")
+        return info
+
+    index = 0
+    for line in (out or b"").decode(errors="ignore").splitlines():
+        key, _, value = line.partition("=")
+        value = value.strip()
+        if not value:
+            continue
+        if key == "format_name":
+            info["format"] = value
+            continue
+        if key == "codec_type":
+            index += 1
+            info[f"stream{index}_type"] = value
+            continue
+        if index <= 0:
+            continue
+        info[f"stream{index}_{key}"] = value
+    return info
+
+
+def describe_video_info(info: dict[str, str]) -> str:
+    """把探测结果拼成一行简短描述。"""
+    if not info:
+        return "未知"
+    parts = []
+    for index in (1, 2):
+        kind = info.get(f"stream{index}_type")
+        if not kind:
+            continue
+        codec = info.get(f"stream{index}_codec_name", "?")
+        profile = info.get(f"stream{index}_profile")
+        detail = codec + (f"/{profile}" if profile else "")
+        if kind == "video":
+            width = info.get(f"stream{index}_width")
+            height = info.get(f"stream{index}_height")
+            pix = info.get(f"stream{index}_pix_fmt")
+            if width and height:
+                detail += f" {width}x{height}"
+            if pix:
+                detail += f" {pix}"
+        parts.append(f"{kind}={detail}")
+    if info.get("format"):
+        parts.append(f"格式={info['format']}")
+    return ", ".join(parts)
+
+
+async def reencode_video_compatible(
+    video_path: Path, *, max_height: int = 1080
+) -> Path:
+    """用 H.264 重新编码，最大化 QQ 兼容性，用于发送失败后的兜底重发。"""
+    info = await probe_video_codec(video_path)
+    duration, width, height = await probe_video_info(video_path)
+    target_height = min(height or max_height, max_height)
+    if target_height <= 0:
+        target_height = max_height
+
+    output = video_path.with_name(f"{video_path.stem}_fix.mp4")
+    if output.exists() and output.stat().st_size > 0:
+        return output
+
+    logger.info(
+        f"[兜底] 重新编码为 H.264: {video_path.name} "
+        f"({describe_video_info(info)}, {fmt_size(video_path)})"
+    )
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-i",
+        str(video_path),
+        "-vf",
+        f"scale=-2:'min({target_height},ih)',format=yuv420p",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-profile:v",
+        "high",
+        "-crf",
+        "20",
+        "-c:a",
+        "aac",
+        "-profile:a",
+        "aac_low",
+        "-b:a",
+        "128k",
+        "-ac",
+        "2",
+        "-movflags",
+        "+faststart",
+        str(output),
+    ]
+    await exec_ffmpeg_cmd(cmd)
+    logger.info(f"[兜底] 重新编码完成: {output.name}, {fmt_size(output)}")
+    return output
+
+
 async def compress_video(
     video_path: Path,
     *,

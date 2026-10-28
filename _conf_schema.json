@@ -120,6 +120,12 @@
         "options": ["h265", "h264", "av1"],
         "default": "h265"
     },
+    "video_reencode_on_fail": {
+        "description": "视频发送失败后重编码重发",
+        "hint": "视频发送失败（含 NapCat 超时）时，用 H.264 重新编码成兼容格式再发一次；失败后再按管理员兜底开关处理",
+        "type": "bool",
+        "default": true
+    },
     "admin_fallback_enabled": {
         "description": "发送失败时私发管理员",
         "hint": "开启后，群聊图片/视频发送失败会自动把资源私发给管理员。网络较差时 NapCat 超时可能是延迟送达，开启前请确认是否接受重复发送风险",

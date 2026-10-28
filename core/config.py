@@ -234,6 +234,7 @@ class PluginConfig(ConfigNode):
     video_compress_target_mb: int
     video_compress_max_height: int
     video_compress_codec: str
+    video_reencode_on_fail: bool
     admin_fallback_enabled: bool
     use_direct_send_api: bool
     forward_threshold: int

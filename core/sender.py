@@ -39,7 +39,10 @@ from .exception import (
 from .render import Renderer
 from .utils import (
     compress_video,
+    describe_video_info,
     has_ffmpeg,
+    probe_video_codec,
+    reencode_video_compatible,
     transcode_video_audio_to_lc,
     video_to_gif,
 )
@@ -267,6 +270,7 @@ class MessageSender:
                 case VideoContent():
                     path = await transcode_video_audio_to_lc(path)
                     path = await self._maybe_compress_video(path)
+                    await self._log_video_info(path)
                     segs.append(self._video_from_path(path))
                 case DynamicContent() as dynamic:
                     gif_path = dynamic.gif_path
@@ -311,6 +315,66 @@ class MessageSender:
         except Exception as e:
             logger.warning(f"[压缩] 视频压缩异常，改用原视频: {e}")
             return path
+
+    @staticmethod
+    async def _log_video_info(path: Path) -> None:
+        try:
+            info = await probe_video_codec(path)
+            from .utils import fmt_size
+
+            logger.info(
+                f"[视频] {path.name} {fmt_size(path)} "
+                f"{describe_video_info(info)}"
+            )
+        except Exception as e:
+            logger.debug(f"[视频] 编码信息探测失败: {e}")
+
+    async def _retry_video_reencoded(
+        self, event: AstrMessageEvent, segs: list[BaseMessageComponent]
+    ) -> bool:
+        """视频发送失败后用 H.264 重新编码重发一次。"""
+        if not getattr(self.cfg, "video_reencode_on_fail", True):
+            return False
+        if not has_ffmpeg():
+            return False
+        new_segs: list[BaseMessageComponent] = []
+        changed = False
+        for seg in segs:
+            path = self._video_path(seg) if isinstance(seg, Video) else None
+            if path is None:
+                new_segs.append(seg)
+                continue
+            try:
+                fixed = await reencode_video_compatible(path)
+            except Exception as e:
+                logger.warning(f"[兜底] 视频重新编码失败: {e}")
+                return False
+            new_segs.append(self._video_from_path(fixed))
+            changed = True
+        if not changed:
+            return False
+        try:
+            logger.info("[兜底] 视频发送失败，改用 H.264 重编码版本重发")
+            await self._send_batch(event, new_segs)
+            logger.info("[兜底] H.264 版本发送成功")
+            return True
+        except Exception as e:
+            logger.warning(f"[兜底] H.264 版本仍发送失败: {e}")
+            return False
+
+    @staticmethod
+    def _video_path(seg: BaseMessageComponent) -> Path | None:
+        path = getattr(seg, "path", "") or ""
+        if not path:
+            file_uri = getattr(seg, "file", "") or ""
+            if file_uri.startswith("file://"):
+                from urllib.parse import unquote, urlparse
+
+                path = unquote(urlparse(file_uri).path)
+        if not path:
+            return None
+        video_path = Path(path)
+        return video_path if video_path.is_file() else None
 
     def _merge_segments_if_needed(
         self,
@@ -395,6 +459,8 @@ class MessageSender:
             await self._send_batch(event, segs)
             return True
         except Exception as e:
+            if await self._retry_video_reencoded(event, raw_segs):
+                return True
             if await self._fallback_to_admin(event, raw_segs):
                 return True
             self._log_send_error(e, segs)
@@ -428,6 +494,9 @@ class MessageSender:
                 await self._send_batch(event, batch)
                 sent = True
             except Exception as e:
+                if await self._retry_video_reencoded(event, batch):
+                    sent = True
+                    continue
                 if await self._fallback_to_admin(event, batch):
                     sent = True
                     continue
