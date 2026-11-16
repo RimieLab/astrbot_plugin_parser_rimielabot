@@ -404,7 +404,7 @@ class MetubeParser(BaseParser):
         raw = await self._extract_video_meta(url)
         if raw is not None:
             duration = float(raw.get("duration") or 0)
-            if duration > self.cfg.max_duration:
+            if duration > self.cfg.max_duration and not self.ignore_duration_limit:
                 reason = f"时长 {duration / 60:.1f} 分钟超限"
                 logger.info(f"[metube] 视频超限, 跳过 Metube 下载 | {reason} | {url}")
                 return self._reject_result(raw, reason)

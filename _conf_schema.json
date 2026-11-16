@@ -53,7 +53,7 @@
     },
     "source_max_minute": {
         "description": "资源最大时长（分钟）",
-        "hint": "允许下载的音视频最大时长，超过则不解析",
+        "hint": "允许下载的音视频最大时长，超过则不解析；@Bot 发链接可强制忽略该限制",
         "type": "int",
         "slider": {
             "min": 1,

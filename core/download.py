@@ -457,11 +457,12 @@ class Downloader:
         headers: dict[str, str] | None = None,
         proxy: str | None = None,
         format: str | None = None,
+        ignore_duration: bool = False,
     ) -> Path:
         info = await self.ytdlp_extract_info(
             url, cookiefile=cookiefile, headers=headers, proxy=proxy
         )
-        if info.duration > self.cfg.max_duration:
+        if info.duration > self.cfg.max_duration and not ignore_duration:
             raise DurationLimitException
 
         video_path = self.cfg.cache_dir / generate_file_name(url, ".mp4")

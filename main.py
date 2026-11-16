@@ -174,6 +174,8 @@ class ParserPlugin(Star):
             and "qq_official" not in mentioned_ids
         ):
             return
+        # @Bot + 链接：显式要求解析，忽略音视频时长上限
+        force_parse = self_id in mentioned_ids or "qq_official" in mentioned_ids
 
         # 卡片解析：扫描整条消息链，兼容 @ + JSON 卡片等组合消息。
         for seg in chain:
@@ -242,8 +244,12 @@ class ParserPlugin(Star):
 
         # 解析
         logger.info(f"[解析开始] {link}")
+        if force_parse:
+            logger.info(f"[解析] 检测到 @Bot，本次忽略时长上限: {link}")
         try:
-            parse_res = await self.parser_map[keyword].parse(keyword, searched)
+            parse_res = await self.parser_map[keyword].parse(
+                keyword, searched, ignore_duration=force_parse
+            )
         except TipException as exc:
             logger.info(f"[解析提示] {link}: {exc.message}")
             await event.send(event.chain_result([Plain(exc.message)]))
@@ -319,16 +325,24 @@ class ParserPlugin(Star):
         async for msg in parser.login.check_qr_state():
             yield event.plain_result(msg)
 
-    async def parse_url(self, url: str):
+    async def parse_url(self, url: str, *, ignore_duration: bool = False):
         """供其他插件调用的公开解析 API：传入 URL 解析并返回 ParseResult 对象"""
         for kw, pat in self.key_pattern_list:
             if kw in url and (m := pat.search(url)):
-                return await self.parser_map[kw].parse(kw, m)
+                return await self.parser_map[kw].parse(
+                    kw, m, ignore_duration=ignore_duration
+                )
         raise ValueError(f"未匹配到支持的解析器: {url}")
 
-    async def parse_and_send(self, event: AstrMessageEvent, url: str) -> bool:
+    async def parse_and_send(
+        self,
+        event: AstrMessageEvent,
+        url: str,
+        *,
+        ignore_duration: bool = False,
+    ) -> bool:
         """供其他插件调用的公开方法：解析指定 URL 并直接发送至 event 对应会话"""
-        result = await self.parse_url(url)
+        result = await self.parse_url(url, ignore_duration=ignore_duration)
         return await self.sender.send_parse_result(event, result)
 
     @filter.llm_tool(name="parse_media_url")
@@ -340,7 +354,7 @@ class ParserPlugin(Star):
             url(string): 待解析的视频或图文等媒体链接
         """
         try:
-            await self.parse_and_send(event, url)
+            await self.parse_and_send(event, url, ignore_duration=True)
             return "链接解析成功并已发送"
         except Exception as e:
             logger.error(f"[LLM Tool] 解析链接失败: {url}, error: {e}")

@@ -122,13 +122,17 @@ class YouTubeParser(BaseParser):
         author = await self._fetch_author_info(video_info.channel_id)
 
         contents = []
-        if video_info.duration <= self.cfg.max_duration:
+        if (
+            video_info.duration <= self.cfg.max_duration
+            or self.ignore_duration_limit
+        ):
             video = self.downloader.ytdlp_download_video(
                 url,
                 cookiefile=self.cookiejar.cookie_file,
                 headers=self.headers,
                 proxy=self.proxy,
                 format="bv*[height<=720]+ba/b[height<=720]",
+                ignore_duration=self.ignore_duration_limit,
             )
             contents.append(
                 self.create_video_content(
@@ -145,7 +149,7 @@ class YouTubeParser(BaseParser):
             contents.append(
                 TextContent(
                     f"视频时长 {duration} 超过解析上限 {limit}，已跳过视频下载；"
-                    "可在插件配置中调大「资源最大时长」"
+                    "可在配置中调大「资源最大时长」，或 @Bot 重发链接强制解析"
                 )
             )
 
@@ -169,7 +173,10 @@ class YouTubeParser(BaseParser):
         contents = []
         contents.extend(self.create_image_contents([video_info.thumbnail]))
 
-        if video_info.duration <= self.cfg.max_duration:
+        if (
+            video_info.duration <= self.cfg.max_duration
+            or self.ignore_duration_limit
+        ):
             audio_task = self.downloader.ytdlp_download_audio(
                 url,
                 cookiefile=self.cookiejar.cookie_file,
@@ -186,7 +193,7 @@ class YouTubeParser(BaseParser):
             contents.append(
                 TextContent(
                     f"音频时长 {duration} 超过解析上限 {limit}，已跳过音频下载；"
-                    "可在插件配置中调大「资源最大时长」"
+                    "可在配置中调大「资源最大时长」，或 @Bot 重发链接强制解析"
                 )
             )
 

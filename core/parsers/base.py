@@ -3,6 +3,7 @@
 from abc import ABC
 from asyncio import Task, TimeoutError, sleep
 from collections.abc import Callable, Coroutine
+from contextvars import ContextVar
 from pathlib import Path
 from re import Match, Pattern, compile
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, cast
@@ -28,6 +29,13 @@ from ..download import Downloader
 from ..exception import ParseException, RedirectException
 
 T = TypeVar("T", bound="BaseParser")
+
+# 当前解析调用是否忽略时长上限（@Bot + 链接时开启）。
+# 用 ContextVar 而不是实例属性，避免同一 parser 并发解析时相互串扰。
+_IGNORE_DURATION_LIMIT: ContextVar[bool] = ContextVar(
+    "parser_ignore_duration_limit", default=False
+)
+
 HandlerFunc = Callable[[T, Match[str]], Coroutine[Any, Any, ParseResult]]
 KeyPatterns = list[tuple[str, Pattern[str]]]
 
@@ -75,6 +83,11 @@ class BaseParser:
         self.data_dir = self.cfg.data_dir
         self.downloader = downloader
         self._session: ClientSession | None = None
+
+    @property
+    def ignore_duration_limit(self) -> bool:
+        """本次解析是否忽略音视频时长上限"""
+        return _IGNORE_DURATION_LIMIT.get()
 
     @property
     def proxy(self) -> str | None:
@@ -128,12 +141,19 @@ class BaseParser:
             await self._session.close()
             self._session = None
 
-    async def parse(self, keyword: str, searched: Match[str]) -> ParseResult:
+    async def parse(
+        self,
+        keyword: str,
+        searched: Match[str],
+        *,
+        ignore_duration: bool = False,
+    ) -> ParseResult:
         """解析 URL 提取信息
 
         Args:
             keyword: 关键词
             searched: 正则表达式匹配对象，由平台对应的模式匹配得到
+            ignore_duration: 是否忽略音视频时长上限（@Bot + 链接时开启）
 
         Returns:
             ParseResult: 解析结果
@@ -141,7 +161,11 @@ class BaseParser:
         Raises:
             ParseException: 解析失败时抛出
         """
-        return await self._handlers[keyword](self, searched)
+        token = _IGNORE_DURATION_LIMIT.set(ignore_duration)
+        try:
+            return await self._handlers[keyword](self, searched)
+        finally:
+            _IGNORE_DURATION_LIMIT.reset(token)
 
     async def parse_with_redirect(
         self,
