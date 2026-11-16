@@ -1,5 +1,13 @@
 # 更新日志
 
+## v1.6.3-beta11
+
+- 修复 YouTube 下载偶发 `HTTP Error 503` 直接失败：yt-dlp 的 Python API
+  默认 `retries` / `fragment_retries` 为 0，现按“下载失败重试次数”开启 HTTP
+  与分片重试，并使用指数退避
+- 遇到 503/429/超时等瞬时错误时，重新解析 URL 后再试一次，避免旧媒体链接失效
+- 油管请求改用现代 Chrome UA，避免旧 UA 被媒体 CDN 判为异常请求
+
 ## v1.6.3-beta10
 
 - 修复 YouTube 报 `Requested format is not available`：补齐 JS 运行时（Deno/Node 22+），

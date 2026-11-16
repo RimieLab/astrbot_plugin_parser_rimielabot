@@ -122,6 +122,70 @@ class Downloader:
         """关闭网络客户端"""
         await self.client.close()
 
+    def _retry_opts(self) -> dict[str, Any]:
+        """yt-dlp 的 Python API 默认不重试，这里显式开启网络重试。
+
+        CLI 的 retries / fragment_retries 默认是 10，而直接构造
+        ``YoutubeDL(params)`` 时是 0，CDN 偶发 503 会直接失败。
+        """
+        retries = max(0, int(self.cfg.download_retry_times))
+        return {
+            "retries": retries,
+            "fragment_retries": retries,
+            "extractor_retries": 3,
+            "retry_sleep_functions": {
+                "http": self._retry_backoff,
+                "fragment": self._retry_backoff,
+            },
+        }
+
+    @staticmethod
+    def _retry_backoff(attempt: int) -> float:
+        """第 attempt 次重试前的等待秒数（指数退避，最多 10 秒）"""
+        return float(min(2**attempt, 10))
+
+    @staticmethod
+    def _is_transient_error(message: str) -> bool:
+        """判断下载错误是否值得重新解析并重试"""
+        lowered = message.lower()
+        return any(
+            token in lowered
+            for token in (
+                "503",
+                "502",
+                "504",
+                "429",
+                "service unavailable",
+                "temporarily unavailable",
+                "too many requests",
+                "connection reset",
+                "connection aborted",
+                "timed out",
+                "timeout",
+                "incomplete read",
+            )
+        )
+
+    async def _download_with_retry(
+        self, url: str, opts: dict[str, Any], *, label: str
+    ) -> None:
+        """执行 yt-dlp 下载；瞬时错误时重新解析 URL 后再试。"""
+        attempts = max(1, int(self.cfg.download_retry_times) + 1)
+        for attempt in range(1, attempts + 1):
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
+                    await to_thread(ydl.download, [url])
+                return
+            except yt_dlp.utils.DownloadError as exc:
+                if attempt >= attempts or not self._is_transient_error(str(exc)):
+                    raise
+                delay = self._retry_backoff(attempt - 1)
+                logger.warning(
+                    f"[下载] {label}遇到瞬时错误，{delay:.0f}s 后重新解析重试 "
+                    f"({attempt}/{attempts - 1}): {str(exc)[:200]}"
+                )
+                await sleep(delay)
+
     @auto_task
     async def streamd(
         self,
@@ -339,6 +403,7 @@ class Downloader:
             "skip_download": True,
             "http_headers": headers or self.default_headers,
             "js_runtimes": js_runtime_opts(),
+            **self._retry_opts(),
         }
         if proxy:
             opts["proxy"] = proxy
@@ -368,6 +433,7 @@ class Downloader:
             "skip_download": True,
             "http_headers": headers or self.default_headers,
             "js_runtimes": js_runtime_opts(),
+            **self._retry_opts(),
         }
         if proxy:
             opts["proxy"] = proxy
@@ -413,14 +479,14 @@ class Downloader:
             ],
             "http_headers": headers or self.default_headers,
             "js_runtimes": js_runtime_opts(),
+            **self._retry_opts(),
         }
         if proxy:
             opts["proxy"] = proxy
         if cookiefile and cookiefile.is_file():
             opts["cookiefile"] = str(cookiefile)
 
-        with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
-            await to_thread(ydl.download, [url])
+        await self._download_with_retry(url, opts, label="视频")
         return video_path
 
     @auto_task
@@ -447,6 +513,7 @@ class Downloader:
             ],
             "http_headers": headers or self.default_headers,
             "js_runtimes": js_runtime_opts(),
+            **self._retry_opts(),
             "quiet": True,
             "no_warnings": True,
         }
@@ -457,8 +524,7 @@ class Downloader:
         if cookiefile and cookiefile.is_file():
             opts["cookiefile"] = str(cookiefile)
 
-        with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
-            await to_thread(ydl.download, [url])
+        await self._download_with_retry(url, opts, label="视频")
         if video_path.exists():
             return video_path
 
@@ -495,12 +561,12 @@ class Downloader:
             "cookiefile": None,
             "http_headers": headers or self.default_headers,
             "js_runtimes": js_runtime_opts(),
+            **self._retry_opts(),
         }
         if proxy:
             opts["proxy"] = proxy
         if cookiefile and cookiefile.is_file():
             opts["cookiefile"] = str(cookiefile)
 
-        with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
-            await to_thread(ydl.download, [url])
+        await self._download_with_retry(url, opts, label="音频")
         return audio_path

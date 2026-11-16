@@ -22,7 +22,17 @@ class YouTubeParser(BaseParser):
     def __init__(self, config: PluginConfig, downloader: Downloader):
         super().__init__(config, downloader)
         self.mycfg = config.parser.youtube
-        self.headers.update({"Referer": "https://www.youtube.com/"})
+        self.headers.update(
+            {
+                "Referer": "https://www.youtube.com/",
+                # 旧的 Chrome/55 UA 容易被 YouTube 媒体 CDN 判为异常请求
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                ),
+            }
+        )
         self.cookiejar = CookieJar(config, self.mycfg, domain="youtube.com")
         if not self.mycfg.cookies:
             logger.warning("油管Cookie未配置，将无法解析相关媒体")
