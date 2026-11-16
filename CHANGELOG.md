@@ -1,5 +1,13 @@
 # 更新日志
 
+## v1.6.3-beta10
+
+- 修复 YouTube 报 `Requested format is not available`：补齐 JS 运行时（Deno/Node 22+），
+  避免签名/n 挑战求解失败后只剩 storyboard 图片
+- yt-dlp 调用统一启用可用 JS 运行时，信息提取、视频下载、音频下载均生效
+- 启动时检测并提示缺失的 JS 运行时，无可用格式时给出明确原因
+- 依赖改为 `yt-dlp[default,deno]`，自动安装 Deno，无需手动配置 Node
+
 ## v1.6.3-beta9
 
 - 视频发送失败（含 NapCat 超时）时，自动用 H.264 重新编码成兼容格式再发一次

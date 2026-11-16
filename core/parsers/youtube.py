@@ -10,7 +10,7 @@ from astrbot.api import logger
 
 from ..config import PluginConfig
 from ..cookie import CookieJar
-from ..download import Downloader
+from ..download import Downloader, detect_js_runtimes
 from ..exception import ParseException, TipException
 from .base import BaseParser, Platform, handle
 
@@ -36,6 +36,14 @@ class YouTubeParser(BaseParser):
             )
             if expired:
                 logger.warning("[油管] Cookies 已过期，请重新导出后更新配置")
+        if not detect_js_runtimes():
+            logger.warning(
+                "[油管] 未检测到 JS 运行时（Deno/Node 22+/Bun），"
+                "YouTube 签名挑战无法求解，解析会报 "
+                "'Requested format is not available'。"
+                "请安装 Deno/Node.js 22+，或执行 "
+                "pip install \"yt-dlp[default,deno]\" 后重启"
+            )
 
     @handle("youtu", r"youtu\.be/[A-Za-z\d\._\?%&\+\-=/#]+")
     @handle(
@@ -65,6 +73,22 @@ class YouTubeParser(BaseParser):
                     "YouTube 要求登录/人机验证：请更新油管 Cookies，"
                     "或给 YouTube 配置干净的住宅代理后重试"
                 ) from exc
+            if (
+                "requested format is not available" in lowered
+                or "n challenge solving failed" in lowered
+                or "signature solving failed" in lowered
+                or "only images are available" in lowered
+            ):
+                version = getattr(getattr(yt_dlp, "version", None), "__version__", "unknown")
+                logger.warning(
+                    "[油管] 无可用视频格式：请确认运行环境已安装 Deno 或 "
+                    f"Node.js 22+，并更新 yt-dlp（当前 {version}）；"
+                    "否则 YouTube 只会返回 storyboard 图片"
+                )
+                raise ParseException(
+                    "YouTube 无可用视频格式：请更新 yt-dlp 并安装 "
+                    "Node.js 22+/Deno 后重启"
+                ) from exc
             raise ParseException(f"YouTube 解析失败: {message[:300]}") from exc
 
     async def parse_video(self, searched: re.Match[str]):
@@ -82,7 +106,6 @@ class YouTubeParser(BaseParser):
                 headers=self.headers,
                 proxy=self.proxy,
                 format="bv*[height<=720]+ba/b[height<=720]",
-                node=True,
             )
             contents.append(
                 self.create_video_content(

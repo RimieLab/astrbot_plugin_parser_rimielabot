@@ -1,3 +1,6 @@
+import os
+import shutil
+import sysconfig
 import time
 from asyncio import Task, TimeoutError, create_task, gather, sleep, to_thread
 from collections.abc import Callable, Coroutine
@@ -26,6 +29,40 @@ from .utils import LimitedSizeDict, generate_file_name, merge_av, safe_unlink
 
 P = ParamSpec("P")
 T = TypeVar("T")
+
+# YouTube 的签名/n 挑战需要 JS 运行时才能求解。yt-dlp 默认只启用 deno，
+# 这里按推荐顺序声明全部候选，由其自行跳过未安装的运行时。
+_JS_RUNTIME_BINARIES: dict[str, str] = {
+    "deno": "deno",
+    "node": "node",
+    "bun": "bun",
+    "quickjs": "qjs",
+}
+
+
+def _runtime_path(binary: str) -> str | None:
+    """查找 JS 运行时可执行文件（含当前 Python 环境的 scripts 目录）"""
+    exe = binary + (sysconfig.get_config_var("EXE") or "")
+    scripts = sysconfig.get_path("scripts")
+    if scripts:
+        candidate = Path(scripts) / exe
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return shutil.which(binary)
+
+
+def detect_js_runtimes() -> list[str]:
+    """返回当前环境可用的 JS 运行时名称"""
+    return [
+        name
+        for name, binary in _JS_RUNTIME_BINARIES.items()
+        if _runtime_path(binary)
+    ]
+
+
+def js_runtime_opts() -> dict[str, dict[str, Any]]:
+    """yt-dlp 的 js_runtimes 选项（未安装的运行时会被自动忽略）"""
+    return {name: {} for name in _JS_RUNTIME_BINARIES}
 
 
 def auto_task(func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, Task[T]]:
@@ -301,6 +338,7 @@ class Downloader:
             "quiet": True,
             "skip_download": True,
             "http_headers": headers or self.default_headers,
+            "js_runtimes": js_runtime_opts(),
         }
         if proxy:
             opts["proxy"] = proxy
@@ -329,6 +367,7 @@ class Downloader:
             "quiet": True,
             "skip_download": True,
             "http_headers": headers or self.default_headers,
+            "js_runtimes": js_runtime_opts(),
         }
         if proxy:
             opts["proxy"] = proxy
@@ -352,7 +391,6 @@ class Downloader:
         headers: dict[str, str] | None = None,
         proxy: str | None = None,
         format: str | None = None,
-        node: bool = False,
     ) -> Path:
         info = await self.ytdlp_extract_info(
             url, cookiefile=cookiefile, headers=headers, proxy=proxy
@@ -374,13 +412,12 @@ class Downloader:
                 {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}
             ],
             "http_headers": headers or self.default_headers,
+            "js_runtimes": js_runtime_opts(),
         }
         if proxy:
             opts["proxy"] = proxy
         if cookiefile and cookiefile.is_file():
             opts["cookiefile"] = str(cookiefile)
-        if node:
-            opts["js_runtimes"] = {"node": {}}
 
         with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
             await to_thread(ydl.download, [url])
@@ -395,7 +432,6 @@ class Downloader:
         headers: dict[str, str] | None = None,
         proxy: str | None = None,
         format: str | None = None,
-        node: bool = False,
     ) -> Path:
         file_stem = generate_file_name(url)
         video_path = self.cfg.cache_dir / f"{file_stem}.mp4"
@@ -410,6 +446,7 @@ class Downloader:
                 {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}
             ],
             "http_headers": headers or self.default_headers,
+            "js_runtimes": js_runtime_opts(),
             "quiet": True,
             "no_warnings": True,
         }
@@ -419,8 +456,6 @@ class Downloader:
             opts["proxy"] = proxy
         if cookiefile and cookiefile.is_file():
             opts["cookiefile"] = str(cookiefile)
-        if node:
-            opts["js_runtimes"] = {"node": {}}
 
         with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
             await to_thread(ydl.download, [url])
@@ -459,6 +494,7 @@ class Downloader:
             ],
             "cookiefile": None,
             "http_headers": headers or self.default_headers,
+            "js_runtimes": js_runtime_opts(),
         }
         if proxy:
             opts["proxy"] = proxy

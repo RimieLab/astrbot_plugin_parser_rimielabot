@@ -80,6 +80,12 @@ SnowLuma HTTP 地址默认为 `http://127.0.0.1:3000`。这里填写的是 **One
 
 > QQ空间登录态只用于回查当前公开分享动态对应的媒体详情，不用于绕过动态自身的访问权限。
 
+### YouTube 解析器
+
+- **Cookies**：必填，YouTube 对未登录请求限制较多，建议定期更新。
+- **JS 运行时**：yt-dlp 需要 Deno 或 Node.js 22+ 求解 YouTube 的签名/n 挑战。依赖已改为 `yt-dlp[default,deno]`，安装插件依赖时会自动装好 Deno；已有环境也可自行安装 Deno/Node.js 22+ 后重启。
+- 若日志出现 `Requested format is not available`，通常是缺少 JS 运行时或 yt-dlp 过旧，更新依赖并重启即可。
+
 ### nhentai 解析器
 
 nhentai 解析器作为可选模板提供，识别 `nhentai.net/g/<数字>` 形式的画廊链接，解析后把全部页面合成为 PDF 发送（卡片只展示封面与标签信息）。
