@@ -140,9 +140,13 @@ class Downloader:
         }
 
     @staticmethod
-    def _retry_backoff(attempt: int) -> float:
-        """第 attempt 次重试前的等待秒数（指数退避，最多 10 秒）"""
-        return float(min(2**attempt, 10))
+    def _retry_backoff(n: int) -> float:
+        """第 n 次重试前的等待秒数（指数退避，最多 10 秒）
+
+        注意 yt-dlp 是以 ``sleep_func(n=...)`` 关键字形式调用的，
+        参数名必须是 n。
+        """
+        return float(min(2**n, 10))
 
     @staticmethod
     def _is_transient_error(message: str) -> bool:
