@@ -181,14 +181,22 @@ class Downloader:
                     await to_thread(ydl.download, [url])
                 return
             except yt_dlp.utils.DownloadError as exc:
-                if attempt >= attempts or not self._is_transient_error(str(exc)):
-                    raise
-                delay = self._retry_backoff(attempt - 1)
+                message = str(exc)
+                if attempt < attempts and self._is_transient_error(message):
+                    delay = self._retry_backoff(attempt - 1)
+                    logger.warning(
+                        f"[下载] {label}遇到瞬时错误，{delay:.0f}s 后重新解析重试 "
+                        f"({attempt}/{attempts - 1}): {message[:200]}"
+                    )
+                    await sleep(delay)
+                    continue
+
+                # 不再把 yt-dlp 的原始异常抛给上层，避免打印整段 traceback；
+                # 详细原因留在日志里，发送层会按配置给出下载失败提示。
                 logger.warning(
-                    f"[下载] {label}遇到瞬时错误，{delay:.0f}s 后重新解析重试 "
-                    f"({attempt}/{attempts - 1}): {str(exc)[:200]}"
+                    f"[下载] {label}最终失败（尝试 {attempt} 次）: {message[:300]}"
                 )
-                await sleep(delay)
+                raise DownloadException(f"{label}下载失败") from exc
 
     @auto_task
     async def streamd(
