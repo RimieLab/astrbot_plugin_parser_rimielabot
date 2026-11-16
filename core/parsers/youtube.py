@@ -10,6 +10,7 @@ from astrbot.api import logger
 
 from ..config import PluginConfig
 from ..cookie import CookieJar
+from ..data import TextContent
 from ..download import Downloader, detect_js_runtimes
 from ..exception import ParseException, TipException
 from .base import BaseParser, Platform, handle
@@ -101,6 +102,18 @@ class YouTubeParser(BaseParser):
                 ) from exc
             raise ParseException(f"YouTube 解析失败: {message[:300]}") from exc
 
+    @staticmethod
+    def _fmt_duration(seconds: float) -> str:
+        """秒数格式化为 m:ss 或 h:mm:ss"""
+        total = max(0, int(seconds))
+        hours, rem = divmod(total, 3600)
+        minutes, secs = divmod(rem, 60)
+        return (
+            f"{hours}:{minutes:02d}:{secs:02d}"
+            if hours
+            else f"{minutes}:{secs:02d}"
+        )
+
     async def parse_video(self, searched: re.Match[str]):
         # 从匹配对象中获取原始URL
         url = searched.group(0)
@@ -125,7 +138,16 @@ class YouTubeParser(BaseParser):
                 )
             )
         else:
+            duration = self._fmt_duration(video_info.duration)
+            limit = self._fmt_duration(self.cfg.max_duration)
+            logger.info(f"[油管] 视频时长 {duration} 超过上限 {limit}，仅发送封面")
             contents.extend(self.create_image_contents([video_info.thumbnail]))
+            contents.append(
+                TextContent(
+                    f"视频时长 {duration} 超过解析上限 {limit}，已跳过视频下载；"
+                    "可在插件配置中调大「资源最大时长」"
+                )
+            )
 
         return self.result(
             title=video_info.title,
@@ -156,6 +178,16 @@ class YouTubeParser(BaseParser):
             )
             contents.append(
                 self.create_audio_content(audio_task, duration=video_info.duration)
+            )
+        else:
+            duration = self._fmt_duration(video_info.duration)
+            limit = self._fmt_duration(self.cfg.max_duration)
+            logger.info(f"[油管] 音频时长 {duration} 超过上限 {limit}，仅发送封面")
+            contents.append(
+                TextContent(
+                    f"音频时长 {duration} 超过解析上限 {limit}，已跳过音频下载；"
+                    "可在插件配置中调大「资源最大时长」"
+                )
             )
 
         return self.result(
