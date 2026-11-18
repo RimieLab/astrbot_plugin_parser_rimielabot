@@ -70,6 +70,23 @@ class MessageSender:
         self.cfg = config
         self.renderer = renderer
 
+    def _parser_render_card(self, platform: str | None) -> bool | None:
+        """读取该解析器的“单条媒体仍渲染卡片”设置。
+
+        返回 None 表示该解析器未单独配置，跟随全局开关。
+        """
+        if not platform:
+            return None
+        parsers = getattr(self.cfg, "parser", None)
+        if parsers is None:
+            return None
+        try:
+            item = getattr(parsers, platform)
+        except AttributeError:
+            return None
+        value = item._data.get("single_render_card")
+        return value if isinstance(value, bool) else None
+
     def _to_file_uri(self, path: Path) -> str:
         if not path.is_absolute():
             path = path.resolve()
@@ -123,7 +140,14 @@ class MessageSender:
 
         # 卡片规则：开关只管单条媒体；多条媒体默认渲染卡片
         if media_count == 1:
-            render_card = self.cfg.single_heavy_render_card
+            parser_card = self._parser_render_card(
+                getattr(result.platform, "name", None)
+            )
+            render_card = (
+                parser_card
+                if parser_card is not None
+                else self.cfg.single_heavy_render_card
+            )
         elif media_count > 1:
             render_card = True
         else:

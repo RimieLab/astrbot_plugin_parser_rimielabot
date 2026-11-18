@@ -38,14 +38,42 @@ class CacheCleaner:
             logger.error(f"[{self.JOBNAME}] Cron 格式错误：{e}")
 
     async def _clean_plugin_cache(self) -> None:
-        """删除并重建缓存目录"""
-        loop = asyncio.get_running_loop()
+        """删除并重建缓存目录（定时任务用）"""
         try:
-            await loop.run_in_executor(None, shutil.rmtree, self.cfg.cache_dir)
-            self.cfg.cache_dir.mkdir(parents=True, exist_ok=True)
-            logger.info("Cache directory cleaned and recreated.")
+            files, size_mb = await self.clean_now()
+            logger.info(
+                f"[{self.JOBNAME}] 缓存已清理：文件 {files} 个，释放 {size_mb:.2f} MB"
+            )
         except Exception:
             logger.exception("Error while cleaning cache directory.")
+
+    async def clean_now(self) -> tuple[int, float]:
+        """立即清理缓存并返回清理统计。
+
+        Returns:
+            ``(文件数, 释放空间 MB)``
+        """
+        loop = asyncio.get_running_loop()
+        cache_dir = self.cfg.cache_dir
+
+        def _collect() -> tuple[int, int]:
+            if not cache_dir.exists():
+                return 0, 0
+            count = total = 0
+            for path in cache_dir.rglob("*"):
+                if path.is_file():
+                    try:
+                        total += path.stat().st_size
+                        count += 1
+                    except OSError:
+                        continue
+            return count, total
+
+        files, size = await loop.run_in_executor(None, _collect)
+        await loop.run_in_executor(None, shutil.rmtree, cache_dir, True)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"[{self.JOBNAME}] 已清理缓存目录 {cache_dir}")
+        return files, size / 1024 / 1024
 
     async def stop(self):
         self.scheduler.remove_all_jobs()

@@ -172,6 +172,8 @@ class ParserItem(ConfigNode):
     nsfw: str | None
     max_page: int | None
     send_blue_links: bool | None
+    single_render_card: bool | None
+    """单条媒体是否仍渲染预览卡片；None 表示跟随全局开关"""
     qzone_credential_source: str | None
     snowluma_http_url: str | None
     snowluma_access_token: str | None

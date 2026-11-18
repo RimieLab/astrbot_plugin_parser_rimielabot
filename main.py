@@ -316,6 +316,21 @@ class ParserPlugin(Star):
         yield event.plain_result("当前会话的解析已关闭")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("清理缓存", alias={"cleancache", "clean_cache"})
+    async def clean_cache(self, event: AstrMessageEvent):
+        """手动清理插件缓存目录"""
+        try:
+            files, size_mb = await self.cleaner.clean_now()
+        except Exception as e:
+            logger.exception("[清理缓存] 失败")
+            yield event.plain_result(f"清理缓存失败：{e}")
+            return
+        logger.info(f"[清理缓存] 已由 {event.get_sender_id()} 触发清理缓存目录")
+        yield event.plain_result(
+            f"缓存已清理：{files} 个文件，释放 {size_mb:.2f} MB"
+        )
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("登录B站", alias={"blogin", "登录b站"})
     async def login_bilibili(self, event: AstrMessageEvent):
         """扫码登录B站"""

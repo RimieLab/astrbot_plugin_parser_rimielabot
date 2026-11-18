@@ -282,6 +282,12 @@
                         "hint": "剔除B站返回的PCDN、MCDN节点链接，提升下载速度",
                         "type": "bool",
                         "default": false
+                    },
+                    "single_render_card": {
+                        "description": "单条媒体仍渲染卡片",
+                        "hint": "仅作用于该解析器的单条媒体：开启则先发预览卡片再发媒体，关闭则只发媒体；留空跟随全局「单条媒体仍渲染卡片」。多条媒体始终渲染卡片",
+                        "type": "bool",
+                        "default": true
                     }
                 }
             },
@@ -303,6 +309,12 @@
                         "hint": "选填",
                         "type": "text",
                         "default": ""
+                    },
+                    "single_render_card": {
+                        "description": "单条媒体仍渲染卡片",
+                        "hint": "仅作用于该解析器的单条媒体：开启则先发预览卡片再发媒体，关闭则只发媒体；留空跟随全局「单条媒体仍渲染卡片」。多条媒体始终渲染卡片",
+                        "type": "bool",
+                        "default": true
                     }
                 }
             },
@@ -324,6 +336,12 @@
                         "hint": "选填",
                         "type": "text",
                         "default": ""
+                    },
+                    "single_render_card": {
+                        "description": "单条媒体仍渲染卡片",
+                        "hint": "仅作用于该解析器的单条媒体：开启则先发预览卡片再发媒体，关闭则只发媒体；留空跟随全局「单条媒体仍渲染卡片」。多条媒体始终渲染卡片",
+                        "type": "bool",
+                        "default": true
                     }
                 }
             },
@@ -387,6 +405,12 @@
                         "description": "额外发送动态中的外部链接标题和链接",
                         "type": "bool",
                         "default": false
+                    },
+                    "single_render_card": {
+                        "description": "单条媒体仍渲染卡片",
+                        "hint": "仅作用于该解析器的单条媒体：开启则先发预览卡片再发媒体，关闭则只发媒体；留空跟随全局「单条媒体仍渲染卡片」。多条媒体始终渲染卡片",
+                        "type": "bool",
+                        "default": true
                     }
                 }
             },
@@ -408,6 +432,12 @@
                         "hint": "解析视频号视频必填：登录 yuanbao.tencent.com 后复制其 Cookie 粘贴于此（借元宝登录态换取视频直链）",
                         "type": "text",
                         "default": ""
+                    },
+                    "single_render_card": {
+                        "description": "单条媒体仍渲染卡片",
+                        "hint": "仅作用于该解析器的单条媒体：开启则先发预览卡片再发媒体，关闭则只发媒体；留空跟随全局「单条媒体仍渲染卡片」。多条媒体始终渲染卡片",
+                        "type": "bool",
+                        "default": true
                     }
                 }
             },
@@ -429,6 +459,12 @@
                         "hint": "选填",
                         "type": "text",
                         "default": ""
+                    },
+                    "single_render_card": {
+                        "description": "单条媒体仍渲染卡片",
+                        "hint": "仅作用于该解析器的单条媒体：开启则先发预览卡片再发媒体，关闭则只发媒体；留空跟随全局「单条媒体仍渲染卡片」。多条媒体始终渲染卡片",
+                        "type": "bool",
+                        "default": true
                     }
                 }
             },
@@ -450,6 +486,12 @@
                         "hint": "选填, 小红书部分链接解析有水印, 填充Cookies可去除水印",
                         "type": "text",
                         "default": ""
+                    },
+                    "single_render_card": {
+                        "description": "单条媒体仍渲染卡片",
+                        "hint": "仅作用于该解析器的单条媒体：开启则先发预览卡片再发媒体，关闭则只发媒体；留空跟随全局「单条媒体仍渲染卡片」。多条媒体始终渲染卡片",
+                        "type": "bool",
+                        "default": true
                     }
                 }
             },
@@ -500,6 +542,12 @@
                             "first",
                             "all"
                         ]
+                    },
+                    "single_render_card": {
+                        "description": "单条媒体仍渲染卡片",
+                        "hint": "仅作用于该解析器的单条媒体：开启则先发预览卡片再发媒体，关闭则只发媒体；留空跟随全局「单条媒体仍渲染卡片」。多条媒体始终渲染卡片",
+                        "type": "bool",
+                        "default": true
                     }
                 }
             },
@@ -521,6 +569,12 @@
                         "hint": "必填! 否则无法解析知乎内容",
                         "type": "text",
                         "default": ""
+                    },
+                    "single_render_card": {
+                        "description": "单条媒体仍渲染卡片",
+                        "hint": "仅作用于该解析器的单条媒体：开启则先发预览卡片再发媒体，关闭则只发媒体；留空跟随全局「单条媒体仍渲染卡片」。多条媒体始终渲染卡片",
+                        "type": "bool",
+                        "default": true
                     }
                 }
             },
@@ -542,6 +596,12 @@
                         "hint": "选填",
                         "type": "text",
                         "default": ""
+                    },
+                    "single_render_card": {
+                        "description": "单条媒体仍渲染卡片",
+                        "hint": "仅作用于该解析器的单条媒体：开启则先发预览卡片再发媒体，关闭则只发媒体；留空跟随全局「单条媒体仍渲染卡片」。多条媒体始终渲染卡片",
+                        "type": "bool",
+                        "default": true
                     }
                 }
             },
@@ -563,6 +623,12 @@
                         "hint": "必填! 同时注意油管Cookie有效期较短",
                         "type": "text",
                         "default": ""
+                    },
+                    "single_render_card": {
+                        "description": "单条媒体仍渲染卡片",
+                        "hint": "仅作用于该解析器的单条媒体：开启则先发预览卡片再发媒体，关闭则只发媒体；留空跟随全局「单条媒体仍渲染卡片」。多条媒体始终渲染卡片",
+                        "type": "bool",
+                        "default": true
                     }
                 }
             },
@@ -584,6 +650,12 @@
                         "hint": "必填",
                         "type": "text",
                         "default": ""
+                    },
+                    "single_render_card": {
+                        "description": "单条媒体仍渲染卡片",
+                        "hint": "仅作用于该解析器的单条媒体：开启则先发预览卡片再发媒体，关闭则只发媒体；留空跟随全局「单条媒体仍渲染卡片」。多条媒体始终渲染卡片",
+                        "type": "bool",
+                        "default": true
                     }
                 }
             },
@@ -605,6 +677,12 @@
                         "hint": "选填",
                         "type": "text",
                         "default": ""
+                    },
+                    "single_render_card": {
+                        "description": "单条媒体仍渲染卡片",
+                        "hint": "仅作用于该解析器的单条媒体：开启则先发预览卡片再发媒体，关闭则只发媒体；留空跟随全局「单条媒体仍渲染卡片」。多条媒体始终渲染卡片",
+                        "type": "bool",
+                        "default": true
                     }
                 }
             },
@@ -626,6 +704,12 @@
                         "hint": "选填",
                         "type": "text",
                         "default": ""
+                    },
+                    "single_render_card": {
+                        "description": "单条媒体仍渲染卡片",
+                        "hint": "仅作用于该解析器的单条媒体：开启则先发预览卡片再发媒体，关闭则只发媒体；留空跟随全局「单条媒体仍渲染卡片」。多条媒体始终渲染卡片",
+                        "type": "bool",
+                        "default": true
                     }
                 }
             },
@@ -647,6 +731,12 @@
                         "hint": "选填",
                         "type": "text",
                         "default": ""
+                    },
+                    "single_render_card": {
+                        "description": "单条媒体仍渲染卡片",
+                        "hint": "仅作用于该解析器的单条媒体：开启则先发预览卡片再发媒体，关闭则只发媒体；留空跟随全局「单条媒体仍渲染卡片」。多条媒体始终渲染卡片",
+                        "type": "bool",
+                        "default": true
                     }
                 }
             },
@@ -668,6 +758,12 @@
                         "hint": "选填",
                         "type": "text",
                         "default": ""
+                    },
+                    "single_render_card": {
+                        "description": "单条媒体仍渲染卡片",
+                        "hint": "仅作用于该解析器的单条媒体：开启则先发预览卡片再发媒体，关闭则只发媒体；留空跟随全局「单条媒体仍渲染卡片」。多条媒体始终渲染卡片",
+                        "type": "bool",
+                        "default": true
                     }
                 }
             },
@@ -722,6 +818,12 @@
                             "忽略"
                         ],
                         "default": "blur"
+                    },
+                    "single_render_card": {
+                        "description": "单条媒体仍渲染卡片",
+                        "hint": "仅作用于该解析器的单条媒体：开启则先发预览卡片再发媒体，关闭则只发媒体；留空跟随全局「单条媒体仍渲染卡片」。多条媒体始终渲染卡片",
+                        "type": "bool",
+                        "default": true
                     }
                 }
             },
@@ -764,6 +866,12 @@
                         "hint": "发送漫画PDF时接受的最大页数，超过则跳过下载发送。0则不限制",
                         "type": "int",
                         "default": 0
+                    },
+                    "single_render_card": {
+                        "description": "单条媒体仍渲染卡片",
+                        "hint": "仅作用于该解析器的单条媒体：开启则先发预览卡片再发媒体，关闭则只发媒体；留空跟随全局「单条媒体仍渲染卡片」。多条媒体始终渲染卡片",
+                        "type": "bool",
+                        "default": true
                     }
                 }
             },
@@ -835,6 +943,12 @@
                         "hint": "仅文字类图文生效：解析出的文本超过该字数会被截断。图片类图文不限制。0 或不填按默认 100 处理。",
                         "type": "int",
                         "default": 100
+                    },
+                    "single_render_card": {
+                        "description": "单条媒体仍渲染卡片",
+                        "hint": "仅作用于该解析器的单条媒体：开启则先发预览卡片再发媒体，关闭则只发媒体；留空跟随全局「单条媒体仍渲染卡片」。多条媒体始终渲染卡片",
+                        "type": "bool",
+                        "default": true
                     }
                 }
             },
