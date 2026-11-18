@@ -327,6 +327,17 @@ class BaseParser:
             contents.append(DynamicContent(task))
         return contents
 
+    @staticmethod
+    def _expected_audio_bytes(duration: float) -> int | None:
+        """按最低码率预估音频的合理体积下限。
+
+        平台无版权/未登录时常返回几十 KB 的错误页，却伪装成 200 响应。
+        取 32kbps 作为下限，留足余量，避免误杀低码率音频。
+        """
+        if duration <= 0:
+            return None
+        return int(duration * 32000 / 8 * 0.5)
+
     def create_audio_content(
         self,
         url_or_task: str | Task[Path],
@@ -341,6 +352,7 @@ class BaseParser:
                 audio_name=name,
                 headers=headers or self.headers,
                 proxy=self.proxy,
+                expected_bytes=self._expected_audio_bytes(duration),
             )
 
         return AudioContent(url_or_task, duration)

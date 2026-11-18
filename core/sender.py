@@ -33,6 +33,7 @@ from .exception import (
     DownloadException,
     DownloadLimitException,
     DurationLimitException,
+    InvalidMediaException,
     SizeLimitException,
     ZeroSizeException,
 )
@@ -256,6 +257,14 @@ class MessageSender:
                 path: Path = await cont.get_path()
             except (DownloadLimitException, ZeroSizeException):
                 continue
+            except InvalidMediaException as exc:
+                if self.cfg.show_download_fail_tip:
+                    segs.append(Plain(f"此项媒体无法获取：{exc}"))
+                continue
+            except InvalidMediaException as exc:
+                if self.cfg.show_download_fail_tip:
+                    segs.append(Plain(f"此项媒体无法获取：{exc}"))
+                continue
             except DownloadException:
                 if self.cfg.show_download_fail_tip:
                     segs.append(Plain("此项媒体下载失败"))
@@ -284,6 +293,10 @@ class MessageSender:
                         else "此项媒体超过大小限制"
                     )
                     segs.append(Plain(message))
+                continue
+            except InvalidMediaException as exc:
+                if self.cfg.show_download_fail_tip:
+                    segs.append(Plain(f"此项媒体无法获取：{exc}"))
                 continue
             except DownloadException:
                 if self.cfg.show_download_fail_tip:

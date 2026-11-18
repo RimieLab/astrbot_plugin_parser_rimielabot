@@ -46,6 +46,13 @@ class ZeroSizeException(DownloadException):
         super().__init__("媒体大小为 0, 取消下载")
 
 
+class InvalidMediaException(DownloadException):
+    """下载到的内容不是有效媒体（例如平台返回的错误页面）"""
+
+    def __init__(self, message: str | None = None):
+        super().__init__(message or "下载到的内容不是有效媒体")
+
+
 class RedirectException(DownloadException):
     """下载重定向异常"""
 

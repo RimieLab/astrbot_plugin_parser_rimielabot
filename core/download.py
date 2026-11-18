@@ -22,6 +22,7 @@ from .constants import COMMON_HEADER
 from .exception import (
     DownloadException,
     DurationLimitException,
+    InvalidMediaException,
     ParseException,
     SizeLimitException,
     ZeroSizeException,
@@ -288,6 +289,18 @@ class Downloader:
                 )
                 raise DownloadException(f"{label}下载失败") from exc
 
+    @staticmethod
+    def _looks_like_html(content_type: str, head: bytes) -> bool:
+        """判断响应是不是伪装成媒体的 HTML 页面。
+
+        网易云等平台在没有版权/未登录时，会把错误页面的状态码伪装成 200，
+        响应头也不带 Content-Length，这些页面不能当媒体文件使用。
+        """
+        if "text/html" in (content_type or "").lower():
+            return True
+        sample = head[:512].lstrip().lower()
+        return sample.startswith((b"<!doctype html", b"<html", b"<?xml"))
+
     @auto_task
     async def streamd(
         self,
@@ -296,8 +309,14 @@ class Downloader:
         file_name: str | None = None,
         headers: dict[str, str] | None = None,
         proxy: str | None | object = ...,
+        expected_bytes: int | None = None,
     ) -> Path:
-        """流式下载"""
+        """流式下载
+
+        Args:
+            expected_bytes: 预期的最小体积；实际明显偏小（如音频只下到几十 KB）时
+                视为下载到了错误页面，直接判定失败
+        """
         if not file_name:
             file_name = generate_file_name(url)
         file_path = self.cfg.cache_dir / file_name
@@ -332,12 +351,15 @@ class Downloader:
                         raise SizeLimitException
 
                     downloaded = 0
+                    head = b""
                     last_log = time.monotonic()
                     with self.get_progress_bar(file_name, content_length) as bar:
                         async with aiofiles.open(file_path, "wb") as file:
                             async for chunk in response.content.iter_chunked(
                                 1024 * 1024
                             ):
+                                if len(head) < 512:
+                                    head += chunk[: 512 - len(head)]
                                 downloaded += len(chunk)
                                 if downloaded > max_bytes:
                                     raise SizeLimitException
@@ -358,11 +380,32 @@ class Downloader:
                         raise ClientError(
                             f"HTTP payload incomplete {downloaded}/{content_length}"
                         )
+                    content_type = response.headers.get("Content-Type", "")
+                    if self._looks_like_html(content_type, head):
+                        logger.warning(
+                            f"媒体 url: {url} 返回的是 HTML 页面"
+                            f"(Content-Type={content_type or 'unknown'})，判定为无效媒体"
+                        )
+                        raise InvalidMediaException(
+                            "资源地址返回的是错误页面，可能无版权或需要登录"
+                        )
+                    if (
+                        expected_bytes
+                        and downloaded < expected_bytes
+                        and not content_length
+                    ):
+                        logger.warning(
+                            f"媒体 url: {url} 实际大小 {downloaded} 字节，"
+                            f"明显小于预期 {expected_bytes} 字节，判定为无效媒体"
+                        )
+                        raise InvalidMediaException(
+                            "下载到的文件明显小于预期，可能无版权或需要登录"
+                        )
 
                 size_mb = file_path.stat().st_size / 1024 / 1024
                 logger.info(f"[下载] 完成 {file_name} ({size_mb:.2f} MB)")
                 return file_path
-            except (ZeroSizeException, SizeLimitException):
+            except (ZeroSizeException, SizeLimitException, InvalidMediaException):
                 await safe_unlink(file_path)
                 raise
             except (ClientError, TimeoutError) as exc:
@@ -421,11 +464,16 @@ class Downloader:
         audio_name: str | None = None,
         headers: dict[str, str] | None = None,
         proxy: str | None = None,
+        expected_bytes: int | None = None,
     ) -> Path:
         if audio_name is None:
             audio_name = generate_file_name(url, ".mp3")
         return await self.streamd(
-            url, file_name=audio_name, headers=headers, proxy=proxy
+            url,
+            file_name=audio_name,
+            headers=headers,
+            proxy=proxy,
+            expected_bytes=expected_bytes,
         )
 
     @auto_task
