@@ -240,6 +240,7 @@ class PluginConfig(ConfigNode):
     forward_threshold: int
 
     show_download_fail_tip: bool
+    prefer_progressive_video: bool
     download_timeout: int
     download_retry_times: int
     common_timeout: int

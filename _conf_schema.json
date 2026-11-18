@@ -155,6 +155,12 @@
         "type": "bool",
         "default": true
     },
+    "prefer_progressive_video": {
+        "description": "优先下载单文件视频格式",
+        "hint": "开启后直接下载单文件渐进式格式（通常是 360p），跳过 503 重试等待，出结果更快。适用于机房/云服务器 IP 被 YouTube 限流、需要重试多次才能下载的环境。画质优先请保持关闭",
+        "type": "bool",
+        "default": false
+    },
     "download_timeout": {
         "description": "下载请求超时秒数",
         "hint": "下载视频、音频等较大文件时的请求超时时间，单位秒。 建议设置大一点，视频、音频较大时下载耗时较长",

@@ -183,15 +183,22 @@ class Downloader:
         return "503" in lowered or "service unavailable" in lowered
 
     @staticmethod
-    def _format_fallbacks(base_format: str) -> list[str]:
+    def _height_of(base_format: str) -> str | None:
+        """从格式字符串里取出分辨率上限，没有则返回 None"""
+        if match := re.search(r"height<=?(\d+)", base_format):
+            return match.group(1)
+        return None
+
+    def _format_fallbacks(self, base_format: str) -> list[str]:
         """主格式失败后依次尝试的备用格式。
 
         H.264 被拒时换 AV1，再不行退回单文件渐进式格式；
         单文件格式对客户端判定最宽松。
         """
-        height = "720"
-        if match := re.search(r"height<=?(\d+)", base_format):
-            height = match.group(1)
+        height = self._height_of(base_format) or "720"
+        if self.cfg.prefer_progressive_video:
+            # 机房 IP 常被单独限流 DASH 流，直接走单文件格式
+            return ["b", f"b[height<={height}]/b"]
         return [
             # 首选：同分辨率，优先 AV1（部分 IP 上 H.264 流会被单独限流）
             f"bv*[height<={height}][vcodec^=av01]+ba/bv*[height<={height}]+ba/b",
@@ -200,6 +207,13 @@ class Downloader:
             # 最后：任意可用格式
             "b",
         ]
+
+    def _initial_video_format(self, base_format: str) -> str:
+        """首次下载使用的格式；开启“优先单文件”时直接选渐进式"""
+        if not self.cfg.prefer_progressive_video:
+            return base_format
+        # 单文件格式只有 360p / 720p 等少数档位，直接让 yt-dlp 选可用的最佳单文件
+        return "b"
 
     @staticmethod
     def _is_transient_error(message: str) -> bool:
@@ -557,12 +571,17 @@ class Downloader:
         if video_path.exists():
             return video_path
 
+        base_format = format or "best"
+        video_format = self._initial_video_format(base_format)
+        if video_format != base_format:
+            logger.info(f"[下载] 已开启优先单文件格式，改用 {video_format}")
+
         opts = {
             "outtmpl": str(video_path),
             "merge_output_format": "mp4",
             # "format": f"bv[filesize<={info.duration // 10 + 10}M]+ba/b[filesize<={info.duration // 8 + 10}M]",
             # "format": "bv*[height<=720]+ba/b[height<=720]",
-            "format": format or "best",
+            "format": video_format,
             "postprocessors": [
                 {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}
             ],
@@ -579,7 +598,7 @@ class Downloader:
             url,
             opts,
             label="视频",
-            format_fallbacks=self._format_fallbacks(opts["format"]),
+            format_fallbacks=self._format_fallbacks(base_format),
         )
         return video_path
 
