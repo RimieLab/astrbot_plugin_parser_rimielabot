@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import sysconfig
 import time
@@ -122,6 +123,26 @@ class Downloader:
         """关闭网络客户端"""
         await self.client.close()
 
+    def _writable_cookiefile(self, cookiefile: Path | None) -> Path | None:
+        """返回可写的 cookie 文件路径。
+
+        yt-dlp 会在下载结束时把轮换后的 Cookie 写回 cookiefile，
+        如果原文件不可写（例如属主不是 AstrBot 用户），会抛 PermissionError
+        干扰下载收尾。这里复制一份到缓存目录使用。
+        """
+        if cookiefile is None or not cookiefile.is_file():
+            return cookiefile
+        if os.access(cookiefile, os.W_OK):
+            return cookiefile
+        try:
+            copy_path = self.cfg.cache_dir / f"ck_{cookiefile.stem}.txt"
+            copy_path.write_bytes(cookiefile.read_bytes())
+            copy_path.chmod(0o600)
+            return copy_path
+        except OSError as exc:
+            logger.debug(f"[下载] Cookie 文件不可写且复制失败，改为只读使用: {exc}")
+            return cookiefile
+
     def _retry_opts(self) -> dict[str, Any]:
         """yt-dlp 的 Python API 默认不重试，这里显式开启网络重试。
 
@@ -141,12 +162,44 @@ class Downloader:
 
     @staticmethod
     def _retry_backoff(n: int) -> float:
-        """第 n 次重试前的等待秒数（指数退避，最多 10 秒）
+        """第 n 次重试前的等待秒数（指数退避，最多 60 秒）
+
+        YouTube 对短时间内的重复请求很敏感，1~2 秒就重来容易触发
+        风控，因此起步就是 10 秒。
 
         注意 yt-dlp 是以 ``sleep_func(n=...)`` 关键字形式调用的，
         参数名必须是 n。
         """
-        return float(min(2**n, 10))
+        return float(min(10 * 2**n, 60))
+
+    @staticmethod
+    def _is_format_rejected(message: str) -> bool:
+        """判断是否属于“某一路媒体流被 CDN 拒绝”。
+
+        YouTube 会对部分客户端/编码格式的 DASH 流单独返回 503，
+        换一路格式往往就能成功。
+        """
+        lowered = message.lower()
+        return "503" in lowered or "service unavailable" in lowered
+
+    @staticmethod
+    def _format_fallbacks(base_format: str) -> list[str]:
+        """主格式失败后依次尝试的备用格式。
+
+        H.264 被拒时换 AV1，再不行退回单文件渐进式格式；
+        单文件格式对客户端判定最宽松。
+        """
+        height = "720"
+        if match := re.search(r"height<=?(\d+)", base_format):
+            height = match.group(1)
+        return [
+            # 首选：同分辨率，优先 AV1（部分 IP 上 H.264 流会被单独限流）
+            f"bv*[height<={height}][vcodec^=av01]+ba/bv*[height<={height}]+ba/b",
+            # 次选：单文件渐进式（18 等），风控判定最宽松
+            f"b[height<={height}]/b",
+            # 最后：任意可用格式
+            "b",
+        ]
 
     @staticmethod
     def _is_transient_error(message: str) -> bool:
@@ -171,10 +224,21 @@ class Downloader:
         )
 
     async def _download_with_retry(
-        self, url: str, opts: dict[str, Any], *, label: str
+        self,
+        url: str,
+        opts: dict[str, Any],
+        *,
+        label: str,
+        format_fallbacks: list[str] | None = None,
     ) -> None:
-        """执行 yt-dlp 下载；瞬时错误时重新解析 URL 后再试。"""
+        """执行 yt-dlp 下载；瞬时错误时重新解析 URL 后再试。
+
+        format_fallbacks 不为空时，遇到媒体流被拒（503）会依次换用备用格式，
+        每次换格式前都等待退避时间，避免短时间内密集请求触发风控。
+        """
         attempts = max(1, int(self.cfg.download_retry_times) + 1)
+        fallbacks = list(format_fallbacks or [])
+        fmt_index = 0
         for attempt in range(1, attempts + 1):
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
@@ -184,17 +248,29 @@ class Downloader:
                 message = str(exc)
                 if attempt < attempts and self._is_transient_error(message):
                     delay = self._retry_backoff(attempt - 1)
-                    logger.warning(
-                        f"[下载] {label}遇到瞬时错误，{delay:.0f}s 后重新解析重试 "
-                        f"({attempt}/{attempts - 1}): {message[:200]}"
-                    )
+                    # 媒体流被拒时优先换一路格式，往往比原样重来更容易成功
+                    if fallbacks and self._is_format_rejected(message):
+                        fmt = fallbacks.pop(0)
+                        opts["format"] = fmt
+                        fmt_index += 1
+                        logger.warning(
+                            f"[下载] {label}媒体流被拒，{delay:.0f}s 后改用格式 "
+                            f"{fmt} 重试 ({attempt}/{attempts - 1})"
+                        )
+                    else:
+                        logger.warning(
+                            f"[下载] {label}遇到瞬时错误，{delay:.0f}s 后重新解析重试 "
+                            f"({attempt}/{attempts - 1}): {message[:200]}"
+                        )
                     await sleep(delay)
                     continue
 
                 # 不再把 yt-dlp 的原始异常抛给上层，避免打印整段 traceback；
                 # 详细原因留在日志里，发送层会按配置给出下载失败提示。
+                suffix = f"，已换用 {fmt_index} 种备用格式" if fmt_index else ""
                 logger.warning(
-                    f"[下载] {label}最终失败（尝试 {attempt} 次）: {message[:300]}"
+                    f"[下载] {label}最终失败（尝试 {attempt} 次{suffix}）: "
+                    f"{message[:300]}"
                 )
                 raise DownloadException(f"{label}下载失败") from exc
 
@@ -419,8 +495,8 @@ class Downloader:
         }
         if proxy:
             opts["proxy"] = proxy
-        if cookiefile and cookiefile.is_file():
-            opts["cookiefile"] = str(cookiefile)
+        if usable_cookie := self._writable_cookiefile(cookiefile):
+            opts["cookiefile"] = str(usable_cookie)
         if format:
             opts["format"] = format
         with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
@@ -449,8 +525,8 @@ class Downloader:
         }
         if proxy:
             opts["proxy"] = proxy
-        if cookiefile and cookiefile.is_file():
-            opts["cookiefile"] = str(cookiefile)
+        if usable_cookie := self._writable_cookiefile(cookiefile):
+            opts["cookiefile"] = str(usable_cookie)
         if format:
             opts["format"] = format
 
@@ -496,10 +572,15 @@ class Downloader:
         }
         if proxy:
             opts["proxy"] = proxy
-        if cookiefile and cookiefile.is_file():
-            opts["cookiefile"] = str(cookiefile)
+        if usable_cookie := self._writable_cookiefile(cookiefile):
+            opts["cookiefile"] = str(usable_cookie)
 
-        await self._download_with_retry(url, opts, label="视频")
+        await self._download_with_retry(
+            url,
+            opts,
+            label="视频",
+            format_fallbacks=self._format_fallbacks(opts["format"]),
+        )
         return video_path
 
     @auto_task
@@ -534,8 +615,8 @@ class Downloader:
             opts.pop("format")
         if proxy:
             opts["proxy"] = proxy
-        if cookiefile and cookiefile.is_file():
-            opts["cookiefile"] = str(cookiefile)
+        if usable_cookie := self._writable_cookiefile(cookiefile):
+            opts["cookiefile"] = str(usable_cookie)
 
         await self._download_with_retry(url, opts, label="视频")
         if video_path.exists():
@@ -578,8 +659,8 @@ class Downloader:
         }
         if proxy:
             opts["proxy"] = proxy
-        if cookiefile and cookiefile.is_file():
-            opts["cookiefile"] = str(cookiefile)
+        if usable_cookie := self._writable_cookiefile(cookiefile):
+            opts["cookiefile"] = str(usable_cookie)
 
         await self._download_with_retry(url, opts, label="音频")
         return audio_path
