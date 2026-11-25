@@ -1,5 +1,12 @@
 # 更新日志
 
+## v1.6.3-beta21
+
+- `noplaylist` 改为按需开启：只有链接确实带 `list=` / `start_radio=` 时才关闭列表，
+  避免无条件设置影响 yt-dlp 的客户端选择
+- 拆分“无可用格式”的错误提示：JS 挑战求解失败（缺运行时）与
+  SABR-only 实验（YouTube 只返回 storyboard）分别给出对应说明
+
 ## v1.6.3-beta20
 
 - 修复电台/混音列表链接（`watch?v=ID&list=RD...&start_radio=1`）无法解析：

@@ -290,6 +290,16 @@ class Downloader:
                 raise DownloadException(f"{label}下载失败") from exc
 
     @staticmethod
+    def _playlist_opts(url: str) -> dict[str, Any]:
+        """带播放列表参数的链接才关闭列表展开。
+
+        无条件设置 noplaylist 会影响 yt-dlp 的客户端选择，因此按需开启。
+        """
+        if re.search(r"[?&](?:list|start_radio)=", url):
+            return {"noplaylist": True}
+        return {}
+
+    @staticmethod
     def _looks_like_html(content_type: str, head: bytes) -> bool:
         """判断响应是不是伪装成媒体的 HTML 页面。
 
@@ -551,10 +561,8 @@ class Downloader:
         opts = {
             "quiet": True,
             "skip_download": True,
-            # 带 list=RD... 的电台/混音链接会被当成播放列表，
-            # 这里强制只解析当前视频
-            "noplaylist": True,
-            "extract_flat": False,
+            # 带 list=RD... 的电台/混音链接会被当成播放列表，这里只解析当前视频
+            **self._playlist_opts(url),
             "http_headers": headers or self.default_headers,
             "js_runtimes": js_runtime_opts(),
             **self._retry_opts(),
@@ -585,7 +593,7 @@ class Downloader:
         opts = {
             "quiet": True,
             "skip_download": True,
-            "noplaylist": True,
+            **self._playlist_opts(url),
             "http_headers": headers or self.default_headers,
             "js_runtimes": js_runtime_opts(),
             **self._retry_opts(),
@@ -636,7 +644,7 @@ class Downloader:
             # "format": "bv*[height<=720]+ba/b[height<=720]",
             "format": video_format,
             # 电台/混音链接只下载当前视频，避免把整个播放列表拖下来
-            "noplaylist": True,
+            **self._playlist_opts(url),
             "postprocessors": [
                 {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}
             ],
@@ -676,7 +684,7 @@ class Downloader:
             "outtmpl": str(self.cfg.cache_dir / file_stem) + ".%(ext)s",
             "merge_output_format": "mp4",
             "format": format or None,
-            "noplaylist": True,
+            **self._playlist_opts(url),
             "postprocessors": [
                 {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}
             ],
@@ -728,7 +736,7 @@ class Downloader:
                 }
             ],
             "cookiefile": None,
-            "noplaylist": True,
+            **self._playlist_opts(url),
             "http_headers": headers or self.default_headers,
             "js_runtimes": js_runtime_opts(),
             **self._retry_opts(),

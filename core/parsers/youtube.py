@@ -104,20 +104,33 @@ class YouTubeParser(BaseParser):
                     "或给 YouTube 配置干净的住宅代理后重试"
                 ) from exc
             if (
-                "requested format is not available" in lowered
-                or "n challenge solving failed" in lowered
+                "n challenge solving failed" in lowered
                 or "signature solving failed" in lowered
                 or "only images are available" in lowered
+                or "jsc" in lowered
             ):
-                version = getattr(getattr(yt_dlp, "version", None), "__version__", "unknown")
+                # 明确是 JS 挑战没解出来：运行时缺失或版本过旧
+                version = getattr(
+                    getattr(yt_dlp, "version", None), "__version__", "unknown"
+                )
                 logger.warning(
-                    "[油管] 无可用视频格式：请确认运行环境已安装 Deno 或 "
-                    f"Node.js 22+，并更新 yt-dlp（当前 {version}）；"
-                    "否则 YouTube 只会返回 storyboard 图片"
+                    "[油管] JS 挑战求解失败：请确认已安装 Deno 或 Node.js 22+，"
+                    f"并更新 yt-dlp（当前 {version}）：{message[:200]}"
                 )
                 raise ParseException(
-                    "YouTube 无可用视频格式：请更新 yt-dlp 并安装 "
-                    "Node.js 22+/Deno 后重启"
+                    "YouTube JS 挑战求解失败：请安装 Deno/Node.js 22+ 后重启"
+                ) from exc
+            if "requested format is not available" in lowered:
+                # 常常是 YouTube 对该账号/该视频启用了 SABR-only 实验，
+                # 只返回 storyboard，或是视频本身要求登录
+                logger.warning(
+                    "[油管] 没有可下载的视频格式（常见原因是 YouTube 对该视频/"
+                    "该账号启用了 SABR-only 实验，或需要登录）："
+                    f"{message[:200]}"
+                )
+                raise ParseException(
+                    "YouTube 未返回可下载的视频格式：可尝试更新 yt-dlp 或更新 "
+                    "Cookies 后重试"
                 ) from exc
             raise ParseException(f"YouTube 解析失败: {message[:300]}") from exc
 
