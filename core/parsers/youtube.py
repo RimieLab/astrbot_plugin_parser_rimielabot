@@ -56,10 +56,29 @@ class YouTubeParser(BaseParser):
                 "pip install \"yt-dlp[default,deno]\" 后重启"
             )
 
+    # 从匹配到的链接里提取视频 ID
+    _VIDEO_ID_PATTERN = re.compile(
+        r"(?:watch\?(?:[^\s#]*&)?v=|shorts/|youtu\.be/)([A-Za-z\d_-]{6,})"
+    )
+
+    @classmethod
+    def canonical_url(cls, matched: str) -> str:
+        """把匹配到的片段规范成单视频链接。
+
+        电台/混音链接（v=ID&list=RD...&start_radio=1）会带上播放列表参数，
+        直接交给 yt-dlp 会被当成播放列表处理，这里只保留视频 ID。
+        """
+        match = cls._VIDEO_ID_PATTERN.search(matched)
+        if match:
+            return f"https://www.youtube.com/watch?v={match.group(1)}"
+        return matched
+
     @handle("youtu", r"youtu\.be/[A-Za-z\d\._\?%&\+\-=/#]+")
     @handle(
         "youtube",
-        r"youtube\.com/(?:watch|shorts)(?:/[A-Za-z\d_\-]+|\?v=[A-Za-z\d_\-]+)",
+        # watch?v=ID 允许后面再跟 list=RD.../start_radio 等参数（电台、混音列表链接）
+        r"youtube\.com/(?:watch(?:\?[^\s#]*?v=[A-Za-z\d_\-]{6,})"
+        r"|shorts/[A-Za-z\d_\-]+)",
     )
     async def _parse_video(self, searched: re.Match[str]):
         return await self.parse_video(searched)
@@ -115,8 +134,8 @@ class YouTubeParser(BaseParser):
         )
 
     async def parse_video(self, searched: re.Match[str]):
-        # 从匹配对象中获取原始URL
-        url = searched.group(0)
+        # 从匹配对象中获取原始URL（规范成单视频链接，去掉播放列表参数）
+        url = self.canonical_url(searched.group(0))
 
         video_info = await self._extract_info(url)
         author = await self._fetch_author_info(video_info.channel_id)
@@ -166,7 +185,7 @@ class YouTubeParser(BaseParser):
     )
     async def ym(self, searched: re.Match[str]):
         """获取油管的音频(需加ym前缀)"""
-        url = searched.group("url")
+        url = self.canonical_url(searched.group("url"))
         video_info = await self._extract_info(url)
         author = await self._fetch_author_info(video_info.channel_id)
 

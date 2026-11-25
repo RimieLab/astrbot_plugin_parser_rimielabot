@@ -551,6 +551,10 @@ class Downloader:
         opts = {
             "quiet": True,
             "skip_download": True,
+            # 带 list=RD... 的电台/混音链接会被当成播放列表，
+            # 这里强制只解析当前视频
+            "noplaylist": True,
+            "extract_flat": False,
             "http_headers": headers or self.default_headers,
             "js_runtimes": js_runtime_opts(),
             **self._retry_opts(),
@@ -581,6 +585,7 @@ class Downloader:
         opts = {
             "quiet": True,
             "skip_download": True,
+            "noplaylist": True,
             "http_headers": headers or self.default_headers,
             "js_runtimes": js_runtime_opts(),
             **self._retry_opts(),
@@ -630,6 +635,8 @@ class Downloader:
             # "format": f"bv[filesize<={info.duration // 10 + 10}M]+ba/b[filesize<={info.duration // 8 + 10}M]",
             # "format": "bv*[height<=720]+ba/b[height<=720]",
             "format": video_format,
+            # 电台/混音链接只下载当前视频，避免把整个播放列表拖下来
+            "noplaylist": True,
             "postprocessors": [
                 {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}
             ],
@@ -669,6 +676,7 @@ class Downloader:
             "outtmpl": str(self.cfg.cache_dir / file_stem) + ".%(ext)s",
             "merge_output_format": "mp4",
             "format": format or None,
+            "noplaylist": True,
             "postprocessors": [
                 {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}
             ],
@@ -720,6 +728,7 @@ class Downloader:
                 }
             ],
             "cookiefile": None,
+            "noplaylist": True,
             "http_headers": headers or self.default_headers,
             "js_runtimes": js_runtime_opts(),
             **self._retry_opts(),

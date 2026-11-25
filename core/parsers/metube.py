@@ -356,15 +356,28 @@ class MetubeParser(BaseParser):
             raise DownloadException(f"写入缓存文件失败: {e}") from e
         return file_path
 
+    # 电台/混音相关的播放列表参数，Metube 会据此下载整个列表
+    _PLAYLIST_PARAMS: ClassVar[tuple[str, ...]] = (
+        "list",
+        "index",
+        "start_radio",
+        "playnext",
+    )
+
     @staticmethod
     def _strip_timestamp_param(url: str) -> str:
-        """去掉 t= 时间戳参数，避免 Metube 将其解析为裁剪起点"""
+        """去掉 t= 时间戳参数，避免 Metube 将其解析为裁剪起点。
+
+        同时清掉 list/index/start_radio 等播放列表参数，只保留单个视频。
+        """
         try:
             parts = urlsplit(url)
             pairs = parse_qsl(parts.query, keep_blank_values=True)
-            if not any(k == "t" for k, _ in pairs):
+            drop = {"t", *self._PLAYLIST_PARAMS}
+            remaining = [(k, v) for k, v in pairs if k not in drop]
+            if len(remaining) == len(pairs):
                 return url
-            query = urlencode([(k, v) for k, v in pairs if k != "t"])
+            query = urlencode(remaining)
             return urlunsplit(parts._replace(query=query))
         except ValueError:
             return url
@@ -374,7 +387,9 @@ class MetubeParser(BaseParser):
     @handle("youtu", r"youtu\.be/[A-Za-z\d\._\?%&\+\-=/#]+")
     @handle(
         "youtube",
-        r"youtube\.com/(?:watch|shorts)(?:/[A-Za-z\d_\-]+|\?v=[A-Za-z\d_\-]+)",
+        # watch?v=ID 允许后面再跟 list=RD.../start_radio 等参数（电台、混音列表链接）
+        r"youtube\.com/(?:watch(?:\?[^\s#]*?v=[A-Za-z\d_\-]{6,})"
+        r"|shorts/[A-Za-z\d_\-]+)",
     )
     async def _parse_video(self, searched: re.Match[str]):
         return await self.parse_video(searched)
