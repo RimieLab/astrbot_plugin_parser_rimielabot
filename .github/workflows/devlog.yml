@@ -117,6 +117,7 @@ jobs:
           AFTER: ${{ github.sha }}
           REF: ${{ github.ref_name }}
           COMMITS: ${{ toJSON(github.event.commits) }}
+        id: entry
         run: |
           set -euo pipefail
 
@@ -138,5 +139,26 @@ jobs:
             fi
           } > /tmp/entry.md
 
-          gh issue comment "$NUM" --repo "$GITHUB_REPOSITORY" --body-file /tmp/entry.md
-          echo "已追加记录到 issue #$NUM"
+          # GitHub 的 GraphQL 偶发 5xx（报错里带 B03B:... 这样的追踪 ID）。
+          # 这类错误重试几次通常就能过去，不必让整条工作流变红。
+          for attempt in 1 2 3 4 5; do
+            if gh issue comment "$NUM" --repo "$GITHUB_REPOSITORY" \
+                 --body-file /tmp/entry.md; then
+              echo "已追加记录到 issue #${NUM}（第 ${attempt} 次尝试）"
+              exit 0
+            fi
+            echo "::warning::追加记录失败（第 ${attempt} 次），稍后重试…"
+            sleep $(( attempt * 5 ))
+          done
+
+          echo "::error::连续 5 次都未能写入 issue #${NUM}"
+          exit 1
+
+      - name: 保存记录（写入失败时留存）
+        if: failure() && steps.entry.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: devlog-entry
+          path: /tmp/entry.md
+          if-no-files-found: ignore
+          retention-days: 14
